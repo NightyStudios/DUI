@@ -188,22 +188,33 @@ export async function validateDslDocument(
 export async function commitDslDocument(
   document: DuiDslDocument,
   approvedBy = 'poc-user',
+  expectedManifestRevision?: number,
+  expectedDuiRevision?: number,
   context?: SurfaceContext,
 ): Promise<DuiDslCommitResponse> {
   const payload = await sendEnvelope(
     'dsl.commit.request',
     'dsl.commit.response',
-    { document, approved_by: approvedBy },
+    {
+      document,
+      approved_by: approvedBy,
+      expected_manifest_revision: expectedManifestRevision,
+      expected_dsl_revision: expectedDuiRevision,
+    },
     context,
   );
   return payload as unknown as DuiDslCommitResponse;
 }
 
-export async function commitPatchPlan(patchPlanId: string, context?: SurfaceContext): Promise<UiManifest> {
+export async function commitPatchPlan(
+  patchPlanId: string,
+  expectedBaseRevision?: number,
+  context?: SurfaceContext,
+): Promise<UiManifest> {
   const payload = await sendEnvelope(
     'commit.request',
     'commit.response',
-    { patch_plan_id: patchPlanId, approved_by: 'poc-user' },
+    { patch_plan_id: patchPlanId, approved_by: 'poc-user', expected_base_revision: expectedBaseRevision },
     context,
   );
   const data = payload as { manifest: UiManifest };

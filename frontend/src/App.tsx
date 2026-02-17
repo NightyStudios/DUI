@@ -542,7 +542,13 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      const response = await commitDslDocument(dslDraft, 'poc-user', surfaceContext);
+      const response = await commitDslDocument(
+        dslDraft,
+        'poc-user',
+        manifest?.revision,
+        dslDraft.meta.revision,
+        surfaceContext,
+      );
       setManifest(response.manifest);
       setPreviewManifest(null);
       setDslDraft(response.document);
@@ -609,7 +615,11 @@ export default function App() {
   }
 
   if (!manifest || !dashboard || !activeLesson) {
-    return <main className="app-shell">Loading...</main>;
+    return (
+      <main className="app-shell">
+        {error ? <section className="error">{error}</section> : 'Loading...'}
+      </main>
+    );
   }
 
   return (
@@ -619,7 +629,7 @@ export default function App() {
           <h1>MathPath LMS</h1>
           <p>
             Learner: {dashboard.learner.name} | Revision {manifest.revision} | Theme {manifest.theme.profile} |
-            {' '}Mode {duiMode} | Surface {SURFACE_ID} | DSL rev {dslDraft?.meta.revision ?? '-'}
+            {' '}Mode {duiMode} | Surface {SURFACE_ID} | DUI rev {dslDraft?.meta.revision ?? '-'}
           </p>
         </div>
         <nav className="tab-row" aria-label="Main pages">
@@ -659,7 +669,7 @@ export default function App() {
         </div>
         <div className="actions">
           <button type="button" className="button" onClick={handleGenerateDslFromPrompt} disabled={busy}>
-            Generate DSL
+            Generate DUI
           </button>
           <button type="button" className="button tonal" onClick={handleParseDslSource} disabled={busy || !dslSource.trim()}>
             Parse Source
@@ -670,7 +680,7 @@ export default function App() {
             onClick={handleValidateDslDocument}
             disabled={busy || !dslDraft || dslSourceDirty}
           >
-            Validate DSL
+            Validate DUI
           </button>
           <button
             type="button"
@@ -678,10 +688,10 @@ export default function App() {
             onClick={handleCommitDslDocument}
             disabled={busy || !dslDraft || dslValidationValid === false || dslSourceDirty}
           >
-            Commit DSL
+            Commit DUI
           </button>
           <button type="button" className="button outlined" onClick={handleLoadCurrentDsl} disabled={busy}>
-            Load Current DSL
+            Load Current DUI
           </button>
           <button
             type="button"
@@ -703,7 +713,7 @@ export default function App() {
             Clear Preview
           </button>
         </div>
-        <label htmlFor="dsl-source">DUI-Lang Source</label>
+        <label htmlFor="dsl-source">DUI Source</label>
         <textarea
           id="dsl-source"
           className="dsl-source-editor mono"
@@ -719,14 +729,14 @@ export default function App() {
 
       {dslDraft ? (
         <section className="patch-summary">
-          <h2>DUI DSL Draft</h2>
+          <h2>DUI Draft</h2>
           <p>
             Document: {dslDraft.meta.document_id} | revision: {dslDraft.meta.revision} | nodes: {dslDraft.nodes.length} |
             {' '}actions: {dslDraft.actions.length} | bindings: {dslDraft.bindings.length}
           </p>
           <p>
             Validation: {dslValidationValid === null ? 'not checked' : dslValidationValid ? 'valid' : 'invalid'} |
-            {' '}Manifest revisions: {revisions.length} | DSL revisions: {dslRevisions.length}
+            {' '}Manifest revisions: {revisions.length} | DUI revisions: {dslRevisions.length}
           </p>
           {dslSourceDirty ? <p className="muted tiny">Source changed locally. Run Parse Source before Validate/Commit.</p> : null}
           {dslWarnings.length ? (

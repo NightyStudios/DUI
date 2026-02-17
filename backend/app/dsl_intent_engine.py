@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import json
-import os
 
-import httpx
-
+from .llm_gateway import LlmGateway
 from .dsl_models import DuiDslDocument, DuiDslNode
 from .dsl_seed import LESSON_SURFACE_ID
 from .models import DuiMode
@@ -30,103 +28,30 @@ class DuiDslIntentEngine:
         current_document: DuiDslDocument,
         mode: DuiMode,
     ) -> tuple[DuiDslDocument | None, list[str]]:
-        api_key = os.getenv("APIFREE_API_KEY")
-        if not api_key:
-            return None, ["APIFREE_API_KEY is not set. Using DSL rule-based fallback."]
-
-        base_url = os.getenv("APIFREE_BASE_URL", "https://api.apifree.ai/v1").rstrip("/")
-        model = os.getenv("APIFREE_MODEL", "deepseek-ai/deepseek-r1-0528")
-        timeout_seconds = float(os.getenv("APIFREE_TIMEOUT_SEC", "60"))
-
         system_prompt = DuiDslIntentEngine._build_system_prompt(current_document, mode)
         user_prompt = (
-            "Transform current DUI-Lang document according to user request.\n"
+            "Transform current DUI document according to user request.\n"
             f"User request:\n{prompt}\n\n"
-            "Return JSON object with keys: document (full DUI-Lang document), warnings (array of strings)."
+            "Return JSON object with keys: document (full DUI document), warnings (array of strings)."
         )
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": 0.1,
-            "max_tokens": 2200,
-            "response_format": {"type": "json_object"},
-        }
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
+        result = LlmGateway.completion_json(system_prompt=system_prompt, user_prompt=user_prompt, max_tokens=2200)
+        if result.data is None:
+            return None, result.warnings
+
+        raw_document = result.data.get("document")
+        if not isinstance(raw_document, dict):
+            return None, ["LLM output does not include valid 'document'. Using DUI rule-based fallback."]
+
+        warnings: list[str] = []
+        raw_warnings = result.data.get("warnings")
+        if isinstance(raw_warnings, list):
+            warnings.extend(str(item) for item in raw_warnings)
 
         try:
-            with httpx.Client(timeout=timeout_seconds) as client:
-                response = client.post(f"{base_url}/chat/completions", headers=headers, json=payload)
-                if response.status_code >= 400:
-                    fallback_payload = dict(payload)
-                    fallback_payload.pop("response_format", None)
-                    response = client.post(f"{base_url}/chat/completions", headers=headers, json=fallback_payload)
-                response.raise_for_status()
-
-            body = response.json()
-            content = DuiDslIntentEngine._extract_assistant_content(body)
-            if not content:
-                return None, ["APIFree returned empty content. Using DSL rule-based fallback."]
-
-            parsed = DuiDslIntentEngine._parse_json(content)
-            if parsed is None or not isinstance(parsed, dict):
-                return None, ["Failed to parse LLM JSON output. Using DSL rule-based fallback."]
-
-            raw_document = parsed.get("document")
-            if not isinstance(raw_document, dict):
-                return None, ["LLM output does not include valid 'document'. Using DSL rule-based fallback."]
-
-            warnings: list[str] = []
-            raw_warnings = parsed.get("warnings")
-            if isinstance(raw_warnings, list):
-                warnings.extend(str(item) for item in raw_warnings)
-
-            try:
-                document = DuiDslDocument.model_validate(raw_document)
-                return document, warnings
-            except Exception:  # noqa: BLE001
-                return None, ["LLM document validation failed. Using DSL rule-based fallback."]
-        except Exception as error:  # noqa: BLE001
-            return None, [f"APIFree DSL intent failed ({type(error).__name__}). Using rule-based fallback."]
-
-    @staticmethod
-    def _extract_assistant_content(body: dict) -> str | None:
-        choices = body.get("choices")
-        if not isinstance(choices, list) or not choices:
-            return None
-
-        message = choices[0].get("message", {})
-        content = message.get("content")
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            chunks: list[str] = []
-            for item in content:
-                if isinstance(item, dict):
-                    text = item.get("text")
-                    if isinstance(text, str):
-                        chunks.append(text)
-            return "\n".join(chunks) if chunks else None
-        return None
-
-    @staticmethod
-    def _parse_json(content: str) -> dict | None:
-        stripped = content.strip()
-        if stripped.startswith("```"):
-            stripped = stripped.removeprefix("```json").removeprefix("```")
-            if stripped.endswith("```"):
-                stripped = stripped[:-3]
-            stripped = stripped.strip()
-        try:
-            parsed = json.loads(stripped)
-            return parsed if isinstance(parsed, dict) else None
-        except json.JSONDecodeError:
-            return None
+            document = DuiDslDocument.model_validate(raw_document)
+            return document, warnings
+        except Exception:  # noqa: BLE001
+            return None, ["LLM document validation failed. Using DUI rule-based fallback."]
 
     @staticmethod
     def _build_system_prompt(current_document: DuiDslDocument, mode: DuiMode) -> str:
@@ -137,17 +62,17 @@ class DuiDslIntentEngine:
             "rules": [
                 "Return JSON only.",
                 "Do not include markdown fences.",
-                "Keep document syntactically valid DUI-Lang document model.",
+                "Keep document syntactically valid DUI document model.",
                 "In safe mode, only change theme profile/density/tokens.",
                 "Preserve node/action/binding ids when possible.",
             ],
             "output_schema": {
-                "document": "full DUI-Lang document object",
+                "document": "full DUI document object",
                 "warnings": "array of strings",
             },
         }
         return (
-            "You are an assistant that updates DUI-Lang documents based on user intent.\n"
+            "You are an assistant that updates DUI documents based on user intent.\n"
             "Use this context:\n"
             f"{json.dumps(context, ensure_ascii=False)}"
         )
@@ -183,6 +108,13 @@ class DuiDslIntentEngine:
             document.theme.density = "comfortable"
             changed = True
 
+        if ("кнопк" in normalized or "button" in normalized) and any(
+            token in normalized for token in ["красн", "red", "красный", "красные"]
+        ):
+            document.theme.tokens["accent"] = "#dc2626"
+            document.theme.tokens["accent_container"] = "#fee2e2"
+            changed = True
+
         if mode in {"extended", "experimental"}:
             if any(token in normalized for token in ["weak topics", "слаб", "слабые темы"]):
                 changed = DuiDslIntentEngine._ensure_weak_topics_widget(document) or changed
@@ -195,7 +127,7 @@ class DuiDslIntentEngine:
 
         if not changed:
             warnings.append(
-                "DSL intent fallback did not detect known commands. Try: minimal, compact, weak topics, practice section."
+                "DUI intent fallback did not detect known commands. Try: minimal, compact, weak topics, practice section."
             )
 
         if document.surface.id == LESSON_SURFACE_ID and mode == "safe":
@@ -284,4 +216,3 @@ class DuiDslIntentEngine:
             content.children.append("practice_queue")
             changed = True
         return changed
-

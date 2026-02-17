@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .manifest_service import PROFILE_TOKENS
 from .models import DuiMode, PatchOperation, UiManifest
+from .policy_profiles import POLICY_PROFILES
 from .template_catalog import template_ids
 
 
@@ -12,40 +12,6 @@ from .template_catalog import template_ids
 class PolicyResult:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
-
-
-MODE_ALLOWED_OPS: dict[DuiMode, set[str]] = {
-    "safe": {
-        "set_theme_profile",
-        "set_density",
-        "move_widget",
-        "remove_widget",
-    },
-    "extended": {
-        "set_theme_profile",
-        "set_density",
-        "set_theme_tokens",
-        "set_layout_constraints",
-        "move_widget",
-        "remove_widget",
-        "add_widget_from_template",
-        "compose_section",
-    },
-    "experimental": {
-        "set_theme_profile",
-        "set_density",
-        "set_theme_tokens",
-        "set_layout_constraints",
-        "move_widget",
-        "remove_widget",
-        "add_widget",
-        "add_widget_from_template",
-        "compose_section",
-    },
-}
-
-THEME_TOKEN_ALLOWLIST = set(PROFILE_TOKENS["default"].keys()) | {"gap", "padding", "row_height"}
-LAYOUT_CONSTRAINT_KEYS = {"max_columns", "sidebar_width", "content_density", "emphasis_zone"}
 
 
 class PolicyEngine:
@@ -56,23 +22,34 @@ class PolicyEngine:
         mode: DuiMode = "extended",
     ) -> PolicyResult:
         result = PolicyResult()
-        allowed_ops = MODE_ALLOWED_OPS[mode]
+        profile = POLICY_PROFILES[mode]
 
         widget_ids = {widget.id for widget in manifest.widgets}
         protected_ids = {widget.id for widget in manifest.widgets if widget.protected}
+        removed_widget_ids = {
+            operation.widget_id
+            for operation in operations
+            if operation.op == "remove_widget" and operation.widget_id in widget_ids
+        }
         zone_counts = {"header": 0, "sidebar": 0, "content": 0, "footer": 0}
         for widget in manifest.widgets:
-            zone_counts[widget.zone] += 1
+            if widget.id not in removed_widget_ids:
+                zone_counts[widget.zone] += 1
 
-        planned_widget_ids = set(widget_ids)
-        for operation in operations:
-            if operation.op == "add_widget_from_template" and operation.widget_id:
-                planned_widget_ids.add(operation.widget_id)
-            if operation.op == "add_widget" and operation.widget:
-                planned_widget_ids.add(operation.widget.id)
+        added_widget_ids = {
+            operation.widget_id
+            for operation in operations
+            if operation.op == "add_widget_from_template" and operation.widget_id
+        }
+        added_widget_ids.update(
+            operation.widget.id
+            for operation in operations
+            if operation.op == "add_widget" and operation.widget
+        )
+        planned_widget_ids = (set(widget_ids) - removed_widget_ids) | added_widget_ids
 
         for operation in operations:
-            if operation.op not in allowed_ops:
+            if operation.op not in profile.allowed_ops:
                 result.errors.append(f"Operation '{operation.op}' is not allowed in mode '{mode}'")
                 continue
 
@@ -109,7 +86,7 @@ class PolicyEngine:
                     result.errors.append(f"Unknown template_id '{operation.template_id}'")
                 if operation.widget_id in widget_ids:
                     result.errors.append(f"Widget '{operation.widget_id}' already exists")
-                if zone_counts[operation.zone] >= 8:
+                if zone_counts[operation.zone] >= profile.max_widgets_per_zone:
                     result.errors.append(f"Zone '{operation.zone}' has reached widget limit")
                 else:
                     zone_counts[operation.zone] += 1
@@ -121,8 +98,10 @@ class PolicyEngine:
                 child_widget_ids = operation.child_widget_ids or []
                 if len(child_widget_ids) == 0:
                     result.errors.append("compose_section requires non-empty child_widget_ids")
-                if len(child_widget_ids) > 6:
-                    result.errors.append("compose_section supports up to 6 child widgets")
+                if len(child_widget_ids) > profile.max_children_per_section:
+                    result.errors.append(
+                        f"compose_section supports up to {profile.max_children_per_section} child widgets"
+                    )
                 unknown_children = [wid for wid in child_widget_ids if wid not in planned_widget_ids]
                 if unknown_children:
                     result.errors.append(
@@ -141,29 +120,33 @@ class PolicyEngine:
                 if not operation.tokens:
                     result.errors.append("set_theme_tokens requires tokens")
                     continue
-                PolicyEngine._validate_theme_tokens(operation.tokens, result)
+                PolicyEngine._validate_theme_tokens(operation.tokens, profile.theme_token_allowlist, result)
 
             elif operation.op == "set_layout_constraints":
                 if not operation.layout_constraints:
                     result.errors.append("set_layout_constraints requires layout_constraints")
                     continue
-                PolicyEngine._validate_layout_constraints(operation.layout_constraints, result)
+                PolicyEngine._validate_layout_constraints(operation.layout_constraints, profile.layout_constraint_keys, result)
 
         return result
 
     @staticmethod
-    def _validate_theme_tokens(tokens: dict[str, str], result: PolicyResult) -> None:
+    def _validate_theme_tokens(tokens: dict[str, str], allowlist: frozenset[str], result: PolicyResult) -> None:
         for key, value in tokens.items():
-            if key not in THEME_TOKEN_ALLOWLIST:
+            if key not in allowlist:
                 result.errors.append(f"Theme token '{key}' is not allowed")
                 continue
             if not isinstance(value, str) or len(value.strip()) == 0:
                 result.errors.append(f"Theme token '{key}' must be a non-empty string")
 
     @staticmethod
-    def _validate_layout_constraints(layout_constraints: dict[str, Any], result: PolicyResult) -> None:
+    def _validate_layout_constraints(
+        layout_constraints: dict[str, Any],
+        allowlist: frozenset[str],
+        result: PolicyResult,
+    ) -> None:
         for key, value in layout_constraints.items():
-            if key not in LAYOUT_CONSTRAINT_KEYS:
+            if key not in allowlist:
                 result.errors.append(f"Layout constraint '{key}' is not allowed")
                 continue
 

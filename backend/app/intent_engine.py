@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import json
-import os
 from uuid import uuid4
 
-import httpx
-
+from .llm_gateway import LlmGateway
 from .models import DuiMode, PatchOperation, UiManifest, UiPatchPlan
 from .template_catalog import template_ids
 
@@ -56,115 +54,29 @@ class IntentEngine:
         manifest: UiManifest,
         mode: DuiMode,
     ) -> tuple[list[PatchOperation] | None, list[str]]:
-        api_key = os.getenv("APIFREE_API_KEY")
-        if not api_key:
-            return None, ["APIFREE_API_KEY is not set. Using rule-based fallback."]
-
-        base_url = os.getenv("APIFREE_BASE_URL", "https://api.apifree.ai/v1").rstrip("/")
-        model = os.getenv("APIFREE_MODEL", "deepseek-ai/deepseek-r1-0528")
-        timeout_seconds = float(os.getenv("APIFREE_TIMEOUT_SEC", "60"))
-
         system_prompt = IntentEngine._build_system_prompt(manifest, mode)
         user_prompt = (
             "User request for DUI changes:\n"
             f"{prompt}\n\n"
             "Return a JSON object with keys: operations (array), warnings (array)."
         )
+        result = LlmGateway.completion_json(system_prompt=system_prompt, user_prompt=user_prompt, max_tokens=1000)
+        if result.data is None:
+            return None, result.warnings
 
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": 0.1,
-            "max_tokens": 1000,
-            "response_format": {"type": "json_object"},
-        }
+        raw_operations = result.data.get("operations", [])
+        raw_warnings = result.data.get("warnings", [])
+        operations, parse_warnings = IntentEngine._coerce_operations(raw_operations)
 
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
+        warnings: list[str] = []
+        if isinstance(raw_warnings, list):
+            warnings.extend(str(item) for item in raw_warnings)
+        warnings.extend(parse_warnings)
 
-        try:
-            with httpx.Client(timeout=timeout_seconds) as client:
-                response = client.post(f"{base_url}/chat/completions", headers=headers, json=payload)
-                if response.status_code >= 400:
-                    # Some OpenAI-compatible providers ignore response_format;
-                    # retry once with a simpler payload.
-                    fallback_payload = dict(payload)
-                    fallback_payload.pop("response_format", None)
-                    response = client.post(f"{base_url}/chat/completions", headers=headers, json=fallback_payload)
+        if not operations:
+            warnings.append("LLM returned no valid operations.")
 
-                response.raise_for_status()
-
-            body = response.json()
-            content = IntentEngine._extract_assistant_content(body)
-            if not content:
-                return None, ["APIFree returned empty model content. Using rule-based fallback."]
-
-            parsed = IntentEngine._parse_llm_json(content)
-            if parsed is None:
-                return None, ["Failed to parse LLM JSON output. Using rule-based fallback."]
-
-            raw_operations = parsed.get("operations", [])
-            raw_warnings = parsed.get("warnings", [])
-            operations, parse_warnings = IntentEngine._coerce_operations(raw_operations)
-
-            warnings: list[str] = []
-            if isinstance(raw_warnings, list):
-                warnings.extend(str(item) for item in raw_warnings)
-            warnings.extend(parse_warnings)
-
-            if not operations:
-                warnings.append("LLM returned no valid operations.")
-
-            return operations, warnings
-        except Exception as error:  # noqa: BLE001
-            return None, [f"APIFree call failed ({type(error).__name__}). Using rule-based fallback."]
-
-    @staticmethod
-    def _extract_assistant_content(body: dict) -> str | None:
-        choices = body.get("choices")
-        if not isinstance(choices, list) or not choices:
-            return None
-
-        message = choices[0].get("message", {})
-        content = message.get("content")
-
-        if isinstance(content, str):
-            return content
-
-        if isinstance(content, list):
-            text_chunks: list[str] = []
-            for item in content:
-                if isinstance(item, dict):
-                    text = item.get("text")
-                    if isinstance(text, str):
-                        text_chunks.append(text)
-            return "\n".join(text_chunks) if text_chunks else None
-
-        return None
-
-    @staticmethod
-    def _parse_llm_json(content: str) -> dict | None:
-        stripped = content.strip()
-
-        if stripped.startswith("```"):
-            # Remove optional fenced markdown wrappers.
-            stripped = stripped.removeprefix("```json").removeprefix("```")
-            if stripped.endswith("```"):
-                stripped = stripped[:-3]
-            stripped = stripped.strip()
-
-        try:
-            parsed = json.loads(stripped)
-            if isinstance(parsed, dict):
-                return parsed
-            return None
-        except json.JSONDecodeError:
-            return None
+        return operations, warnings
 
     @staticmethod
     def _coerce_operations(raw_operations: object) -> tuple[list[PatchOperation], list[str]]:
@@ -344,6 +256,19 @@ class IntentEngine:
             operations.append(PatchOperation(op="move_widget", widget_id="learning_path", zone="sidebar"))
 
         if mode in {"extended", "experimental"}:
+            if ("кнопк" in normalized or "button" in normalized) and any(
+                token in normalized for token in ["красн", "red", "красный", "красные"]
+            ):
+                operations.append(
+                    PatchOperation(
+                        op="set_theme_tokens",
+                        tokens={
+                            "accent": "#dc2626",
+                            "accent_container": "#fee2e2",
+                        },
+                    )
+                )
+
             if any(token in normalized for token in ["добавь слаб", "weak topic", "weak topics"]):
                 operations.append(
                     PatchOperation(

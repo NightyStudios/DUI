@@ -34,16 +34,17 @@
 - `POST /ai/ui/commit`
 - `POST /ai/ui/revert`
 - `POST /a2ui/envelope` (новый основной transport)
+- `GET /ops/metrics` (базовые runtime метрики)
 
-## DUI-Lang v1-core (реализация)
+## DUI v1-core (реализация)
 
-В backend добавлен первый рабочий слой DSL:
+В backend добавлен первый рабочий слой DUI:
 - `dui-lang/1.0` документная модель;
 - allowlist-каталог node/action типов;
 - validator (структура, graph-check, policy limits, token allowlist);
-- compiler `DSL -> UiManifest` для совместимого runtime preview/commit;
-- seed DSL документы для `math_lms.dashboard` и `math_lms.lesson`;
-- хранение DSL ревизий в `surface store` (`dsl_revisions`).
+- compiler `DUI -> UiManifest` для совместимого runtime preview/commit;
+- seed DUI документы для `math_lms.dashboard` и `math_lms.lesson`;
+- хранение DUI ревизий в `surface store` (`dsl_revisions`).
 
 ## A2UI envelope (v1)
 
@@ -84,9 +85,9 @@
 - `dsl.validate.request/response`
 - `dsl.commit.request/response`
 
-## Текстовый DUI-Lang синтаксис
+## Текстовый DUI синтаксис
 
-Поддерживается парсинг текстового DSL в документ:
+Поддерживается парсинг текстового DUI в документ:
 
 ```text
 surface math_lms.dashboard {
@@ -113,19 +114,19 @@ surface math_lms.dashboard {
 }
 ```
 
-Frontend теперь включает DSL-workbench:
-- `Generate DSL` (через `dsl.intent.request`) из natural-language prompt;
-- `Parse Source` (`dsl.parse.request`) для проверки текстового DSL;
-- `Validate DSL` (`dsl.validate.request`) для готового документа;
-- `Commit DSL` (`dsl.commit.request`) с записью DSL + manifest ревизий;
-- редактор `DUI-Lang Source` с автозаполнением текущего документа из `dsl.current.request`.
+Frontend теперь включает DUI-workbench:
+- `Generate DUI` (через `dsl.intent.request`) из natural-language prompt;
+- `Parse Source` (`dsl.parse.request`) для проверки текстового DUI;
+- `Validate DUI` (`dsl.validate.request`) для готового документа;
+- `Commit DUI` (`dsl.commit.request`) с записью DUI + manifest ревизий;
+- редактор `DUI Source` с автозаполнением текущего документа из `dsl.current.request`.
 
 ## Запуск
 
 ### Быстрый старт (frontend + backend)
 
 ```bash
-cd /home/temmie/cdng/DUI
+cd /Users/temmie/coding/dui
 cp .env.example .env
 ./dev.sh
 ```
@@ -140,6 +141,12 @@ cp .env.example .env
 BACKEND_HOST=127.0.0.1 BACKEND_PORT=8000 FRONTEND_HOST=0.0.0.0 FRONTEND_PORT=5173 ./dev.sh
 ```
 
+Для CORS используйте `DUI_CORS_ORIGINS` (comma-separated), например:
+
+```bash
+export DUI_CORS_ORIGINS="http://localhost:5173,http://127.0.0.1:5173"
+```
+
 ### 1) Backend
 
 ```bash
@@ -150,7 +157,15 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
-Опционально для LLM через APIFree:
+Локальная модель через OpenAI-совместимый endpoint (например Ollama):
+
+```bash
+export DUI_LLM_PROVIDER="local"
+export DUI_LLM_BASE_URL="http://127.0.0.1:11434/v1"
+export DUI_LLM_MODEL="qwen2.5:14b-instruct"
+```
+
+Облачный провайдер через APIFree:
 
 ```bash
 export APIFREE_API_KEY="..."
@@ -158,7 +173,7 @@ export APIFREE_MODEL="deepseek-ai/deepseek-r1-0528"
 export APIFREE_BASE_URL="https://api.apifree.ai/v1"
 ```
 
-Если `APIFREE_API_KEY` не задан или запрос к провайдеру не проходит, backend автоматически использует rule-based fallback.
+Если локальный/облачный LLM не задан или запрос к провайдеру не проходит, backend автоматически использует rule-based fallback.
 
 ### 2) Frontend
 
@@ -173,7 +188,21 @@ Frontend по умолчанию использует `http://localhost:8000`.
 ## Тесты
 
 ```bash
-backend/.venv/bin/python -m unittest -v backend.tests.test_storage_resilience backend.tests.test_dsl_parser backend.tests.test_dsl_validator backend.tests.test_dsl_compiler backend.tests.test_dsl_service
+backend/.venv/bin/python -m unittest -v backend.tests.test_storage_resilience backend.tests.test_dsl_parser backend.tests.test_dsl_validator backend.tests.test_dsl_compiler backend.tests.test_policy backend.tests.test_dsl_service
+```
+
+В репозитории также добавлен GitHub Actions workflow:
+- backend unit tests
+- frontend production build
+
+Live-проверка именно model-generated DUI intent (опционально, не входит в CI):
+
+```bash
+DUI_LIVE_LLM_TESTS=1 \
+DUI_LLM_PROVIDER=local \
+DUI_LLM_BASE_URL=http://127.0.0.1:11434/v1 \
+DUI_LLM_MODEL=qwen2.5:14b-instruct \
+backend/.venv/bin/python -m unittest -v backend.tests.test_live_llm_prompts
 ```
 
 ## DUI prompts (v1)
@@ -188,9 +217,18 @@ backend/.venv/bin/python -m unittest -v backend.tests.test_storage_resilience ba
 
 ## Ограничение v1
 
-LLM-интеграция работает в режиме structured-output с fallback. Реальный quality результата зависит от лимитов и стабильности APIFree модели.
+LLM-интеграция работает в режиме structured-output с fallback. Реальный quality результата зависит от выбранной локальной/облачной модели.
 
-## Extended DSL (кратко)
+## Архитектурный hardening (v2)
+
+- orchestration вынесен в service layer (`backend/app/services/`);
+- policy rules вынесены в data-профили (`backend/app/policy_profiles.py`);
+- добавлен optimistic concurrency (`expected_*_revision`, `base_revision`) в commit pipeline;
+- при patch commit now синхронизируются и manifest, и DUI-документ (единая ревизионная модель);
+- добавлены runtime метрики (`GET /ops/metrics`);
+- для multi-surface consistency есть опциональный guard `DUI_ENFORCE_CROSS_SURFACE_THEME=1`.
+
+## Extended DUI (кратко)
 
 В `extended` режиме доступны операции:
 - `set_theme_tokens`

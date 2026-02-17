@@ -108,6 +108,8 @@ export interface UiPatchPlan {
   warnings: string[];
   created_at: string;
   status: 'draft' | 'committed' | 'rejected';
+  base_manifest_id?: string | null;
+  base_revision?: number | null;
 }
 
 export interface IntentResponse {

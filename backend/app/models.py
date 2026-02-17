@@ -125,6 +125,8 @@ class UiPatchPlan(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     status: PatchStatus = "draft"
+    base_manifest_id: str | None = None
+    base_revision: int | None = None
 
 
 class IntentRequest(BaseModel):
@@ -148,6 +150,7 @@ class CommitRequest(BaseModel):
     session_id: str | None = None
     surface_id: str | None = None
     turn_id: str | None = None
+    expected_base_revision: int | None = None
 
 
 class CommitResponse(BaseModel):

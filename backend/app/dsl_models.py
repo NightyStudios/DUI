@@ -104,6 +104,8 @@ class DuiDslCommitRequest(BaseModel):
     document: DuiDslDocument
     surface_id: str | None = None
     approved_by: str | None = None
+    expected_manifest_revision: int | None = None
+    expected_dsl_revision: int | None = None
 
 
 class DuiDslCommitResponse(BaseModel):

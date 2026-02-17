@@ -25,6 +25,12 @@ SURFACE_STORE_VERSION = 1
 
 
 class ManifestStore:
+    @staticmethod
+    def _normalize_surface_id(surface_id: str | None) -> str:
+        if surface_id and surface_id.strip():
+            return surface_id.strip()
+        return DEFAULT_SURFACE_ID
+
     def __init__(self, state_file: Path):
         self.state_file = state_file
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
@@ -323,6 +329,7 @@ class ManifestStore:
                 tmp_path.unlink(missing_ok=True)
 
     def _ensure_surface(self, state: dict[str, Any], surface_id: str) -> dict[str, Any]:
+        surface_id = self._normalize_surface_id(surface_id)
         surfaces = state.setdefault("surfaces", {})
         if surface_id not in surfaces:
             seed_manifest = self._build_seed_manifest_for_surface(surface_id)
@@ -331,6 +338,7 @@ class ManifestStore:
         return surfaces[surface_id]
 
     def _get_surface(self, state: dict[str, Any], surface_id: str) -> dict[str, Any]:
+        surface_id = self._normalize_surface_id(surface_id)
         surface = self._ensure_surface(state, surface_id)
         return self._normalize_surface_state(surface_id, surface)
 
@@ -352,6 +360,7 @@ class ManifestStore:
         return output
 
     def get_current_manifest(self, surface_id: str = DEFAULT_SURFACE_ID) -> UiManifest:
+        surface_id = self._normalize_surface_id(surface_id)
         state = self._read_state()
         normalized = self._normalize_state(state)
         surface = self._get_surface(normalized, surface_id)
@@ -362,6 +371,7 @@ class ManifestStore:
         return UiManifest.model_validate(raw)
 
     def list_revisions(self, surface_id: str = DEFAULT_SURFACE_ID) -> list[UiManifest]:
+        surface_id = self._normalize_surface_id(surface_id)
         state = self._read_state()
         normalized = self._normalize_state(state)
         surface = self._get_surface(normalized, surface_id)
@@ -371,6 +381,7 @@ class ManifestStore:
         return [UiManifest.model_validate(raw) for raw in surface["revisions"]]
 
     def get_current_dsl_document(self, surface_id: str = DEFAULT_SURFACE_ID) -> DuiDslDocument:
+        surface_id = self._normalize_surface_id(surface_id)
         state = self._read_state()
         normalized = self._normalize_state(state)
         surface = self._get_surface(normalized, surface_id)
@@ -381,6 +392,7 @@ class ManifestStore:
         return DuiDslDocument.model_validate(raw)
 
     def list_dsl_revisions(self, surface_id: str = DEFAULT_SURFACE_ID) -> list[DuiDslDocument]:
+        surface_id = self._normalize_surface_id(surface_id)
         state = self._read_state()
         normalized = self._normalize_state(state)
         surface = self._get_surface(normalized, surface_id)
@@ -390,6 +402,7 @@ class ManifestStore:
         return [DuiDslDocument.model_validate(raw) for raw in surface["dsl_revisions"]]
 
     def get_surface_context(self, surface_id: str = DEFAULT_SURFACE_ID) -> dict[str, str]:
+        surface_id = self._normalize_surface_id(surface_id)
         state = self._read_state()
         normalized = self._normalize_state(state)
         surface = self._get_surface(normalized, surface_id)
@@ -403,7 +416,7 @@ class ManifestStore:
         }
 
     def save_patch_plan(self, patch_plan: UiPatchPlan, surface_id: str | None = None) -> None:
-        resolved_surface_id = surface_id or patch_plan.surface_id or DEFAULT_SURFACE_ID
+        resolved_surface_id = self._normalize_surface_id(surface_id or patch_plan.surface_id)
         patch_plan.surface_id = resolved_surface_id
         state = self._read_state()
         normalized = self._normalize_state(state)
@@ -416,7 +429,7 @@ class ManifestStore:
         normalized = self._normalize_state(state)
 
         if surface_id:
-            surface = self._ensure_surface(normalized, surface_id)
+            surface = self._ensure_surface(normalized, self._normalize_surface_id(surface_id))
             raw = surface["patch_plans"].get(patch_plan_id)
             self._write_state(normalized)
             if raw:
@@ -433,7 +446,7 @@ class ManifestStore:
         return None
 
     def update_patch_plan(self, patch_plan: UiPatchPlan, surface_id: str | None = None) -> None:
-        resolved_surface_id = surface_id or patch_plan.surface_id or DEFAULT_SURFACE_ID
+        resolved_surface_id = self._normalize_surface_id(surface_id or patch_plan.surface_id)
         patch_plan.surface_id = resolved_surface_id
         state = self._read_state()
         normalized = self._normalize_state(state)
@@ -442,6 +455,7 @@ class ManifestStore:
         self._write_state(normalized)
 
     def append_manifest_revision(self, manifest: UiManifest, surface_id: str = DEFAULT_SURFACE_ID) -> None:
+        surface_id = self._normalize_surface_id(surface_id)
         state = self._read_state()
         normalized = self._normalize_state(state)
         surface = self._ensure_surface(normalized, surface_id)
@@ -449,13 +463,41 @@ class ManifestStore:
         self._write_state(normalized)
 
     def append_dsl_revision(self, document: DuiDslDocument, surface_id: str = DEFAULT_SURFACE_ID) -> None:
+        surface_id = self._normalize_surface_id(surface_id)
         state = self._read_state()
         normalized = self._normalize_state(state)
         surface = self._ensure_surface(normalized, surface_id)
         surface["dsl_revisions"].append(document.model_dump(mode="json"))
         self._write_state(normalized)
 
+    def append_manifest_and_dsl_revision(
+        self,
+        *,
+        manifest: UiManifest,
+        document: DuiDslDocument,
+        surface_id: str = DEFAULT_SURFACE_ID,
+        expected_manifest_revision: int | None = None,
+        expected_dsl_revision: int | None = None,
+    ) -> tuple[bool, int, int]:
+        surface_id = self._normalize_surface_id(surface_id)
+        state = self._read_state()
+        normalized = self._normalize_state(state)
+        surface = self._ensure_surface(normalized, surface_id)
+
+        current_manifest_revision = int(surface["revisions"][-1]["revision"])
+        current_dsl_revision = int(surface["dsl_revisions"][-1]["meta"]["revision"])
+        if expected_manifest_revision is not None and current_manifest_revision != expected_manifest_revision:
+            return False, current_manifest_revision, current_dsl_revision
+        if expected_dsl_revision is not None and current_dsl_revision != expected_dsl_revision:
+            return False, current_manifest_revision, current_dsl_revision
+
+        surface["revisions"].append(manifest.model_dump(mode="json"))
+        surface["dsl_revisions"].append(document.model_dump(mode="json"))
+        self._write_state(normalized)
+        return True, current_manifest_revision, current_dsl_revision
+
     def get_revision(self, revision: int, surface_id: str = DEFAULT_SURFACE_ID) -> UiManifest | None:
+        surface_id = self._normalize_surface_id(surface_id)
         state = self._read_state()
         normalized = self._normalize_state(state)
         surface = self._ensure_surface(normalized, surface_id)
