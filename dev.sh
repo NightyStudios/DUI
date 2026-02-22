@@ -18,19 +18,60 @@ BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_HOST="${FRONTEND_HOST:-0.0.0.0}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 DUI_LLM_LOG_INPUT="${DUI_LLM_LOG_INPUT:-0}"
+BOOTSTRAP="${BOOTSTRAP:-0}"
 
 usage() {
   cat <<'EOF'
 Usage: ./dev.sh [options]
 
 Options:
+  --bootstrap         Install backend/frontend dependencies automatically when missing.
   --llm-debug-input   Print all LLM input payloads (system/user prompts) to backend console.
   -h, --help          Show this help.
 EOF
 }
 
+bootstrap_backend() {
+  local python_bin
+  if command -v python3 >/dev/null 2>&1; then
+    python_bin="python3"
+  elif command -v python >/dev/null 2>&1; then
+    python_bin="python"
+  else
+    echo "Python is required for backend bootstrap, but no python executable was found."
+    exit 1
+  fi
+
+  echo "Bootstrapping backend dependencies..."
+  (
+    cd "$BACKEND_DIR"
+    if [[ ! -d ".venv" ]]; then
+      "$python_bin" -m venv .venv
+    fi
+    source .venv/bin/activate
+    pip install -r requirements.txt
+  )
+}
+
+bootstrap_frontend() {
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "npm is required for frontend bootstrap, but it was not found."
+    exit 1
+  fi
+
+  echo "Bootstrapping frontend dependencies..."
+  (
+    cd "$FRONTEND_DIR"
+    npm install
+  )
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --bootstrap)
+      BOOTSTRAP=1
+      shift
+      ;;
     --llm-debug-input)
       DUI_LLM_LOG_INPUT=1
       shift
@@ -48,16 +89,36 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ! -x "$BACKEND_DIR/.venv/bin/uvicorn" ]]; then
-  echo "Backend venv not found: $BACKEND_DIR/.venv/bin/uvicorn"
-  echo "Run:"
-  echo "  cd backend && python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt"
+  if [[ "$BOOTSTRAP" == "1" ]]; then
+    bootstrap_backend
+  else
+    echo "Backend venv not found: $BACKEND_DIR/.venv/bin/uvicorn"
+    echo "Run:"
+    echo "  cd backend && python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt"
+    echo "Or run: ./dev.sh --bootstrap"
+    exit 1
+  fi
+fi
+
+if [[ ! -d "$FRONTEND_DIR/node_modules" ]]; then
+  if [[ "$BOOTSTRAP" == "1" ]]; then
+    bootstrap_frontend
+  else
+    echo "Frontend dependencies are not installed: $FRONTEND_DIR/node_modules"
+    echo "Run:"
+    echo "  cd frontend && npm install"
+    echo "Or run: ./dev.sh --bootstrap"
+    exit 1
+  fi
+fi
+
+if [[ ! -x "$BACKEND_DIR/.venv/bin/uvicorn" ]]; then
+  echo "Backend bootstrap did not produce $BACKEND_DIR/.venv/bin/uvicorn"
   exit 1
 fi
 
 if [[ ! -d "$FRONTEND_DIR/node_modules" ]]; then
-  echo "Frontend dependencies are not installed: $FRONTEND_DIR/node_modules"
-  echo "Run:"
-  echo "  cd frontend && npm install"
+  echo "Frontend bootstrap did not produce $FRONTEND_DIR/node_modules"
   exit 1
 fi
 
