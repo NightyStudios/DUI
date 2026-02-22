@@ -3,778 +3,636 @@ import type { CSSProperties } from 'react';
 
 import {
   commitDslDocument,
+  fetchCurrentDsl,
   fetchCurrentManifest,
-  fetchCurrentDslDocument,
   fetchDashboardData,
-  fetchDslRevisions,
-  fetchLesson,
-  fetchRevisions,
+  fetchLessonData,
+  fetchManifestRevisions,
+  fetchSurfaces,
+  generateDslIntent,
   parseDslSource,
-  requestDslIntent,
-  revertRevision,
-  validateDslDocument,
+  revertManifest,
 } from './api';
-import { serializeDuiDslDocument } from './dslText';
-import { applyTheme } from './theme';
+import { starterDslSource } from './dslText';
+import {
+  DASHBOARD_SURFACE_ID,
+  DEFAULT_LESSON_ID,
+  FALLBACK_DASHBOARD,
+  FALLBACK_LESSONS,
+  FALLBACK_SURFACES,
+  MODE_LABELS,
+  MODE_OPTIONS,
+  SESSION_ID,
+} from './studioConfig';
+import { LessonPage, ManifestCanvas } from './studioRenderer';
+import {
+  describeError,
+  getBusyActionLabel,
+  normalizePathname,
+  resolveRoute,
+  routeForSurface,
+  surfaceForRoute,
+  type BusyAction,
+} from './studioRouting';
+import { resolveStudioTheme } from './theme';
 import type {
   DuiDslDocument,
-  DuiDslValidationIssue,
   DuiMode,
   LmsDashboardData,
   LmsLessonData,
-  SectionConfig,
   UiManifest,
-  WidgetConfig,
-  Zone,
+  UiSurfaceSummary,
 } from './types';
 
-const ZONES: Zone[] = ['header', 'sidebar', 'content', 'footer'];
+export default function App(): JSX.Element {
+  const [currentPath, setCurrentPath] = useState<string>(() => normalizePathname(window.location.pathname));
+  const [mode, setMode] = useState<DuiMode>('extended');
+  const [prompt, setPrompt] = useState('Сделай интерфейс более контрастным, увеличь главный контент и добавь быстрые действия');
+  const [sourceText, setSourceText] = useState(starterDslSource(DASHBOARD_SURFACE_ID));
 
-type Page = 'dashboard' | 'lesson';
-const SURFACE_ID = 'math_lms.dashboard';
-const SESSION_ID = 'demo-session';
-
-function StudyProgressCard({ data }: { data: LmsDashboardData }) {
-  const goalPercent = Math.min(100, Math.round((data.learner.lessons_done / data.learner.weekly_goal) * 100));
-
-  return (
-    <div className="widget-content">
-      <p className="value">{data.learner.mastery_percent}% mastery</p>
-      <p className="muted">{data.learner.track}</p>
-      <p className="muted">Streak: {data.learner.streak_days} days</p>
-      <div className="progress-track" aria-hidden>
-        <div className="progress-fill" style={{ width: `${goalPercent}%` }} />
-      </div>
-      <small>
-        Weekly goal: {data.learner.lessons_done}/{data.learner.weekly_goal} lessons
-      </small>
-    </div>
-  );
-}
-
-function LearningPathCard({
-  data,
-  onOpenLesson,
-}: {
-  data: LmsDashboardData;
-  onOpenLesson: (lessonId: string) => void;
-}) {
-  return (
-    <div className="widget-content">
-      <ul className="list-reset list-gap">
-        {data.learning_path.map((lesson) => (
-          <li key={lesson.id} className="item-row">
-            <div>
-              <strong>{lesson.title}</strong>
-              <p className="muted tiny">
-                {lesson.topic} | {lesson.difficulty} | {lesson.duration_min} min
-              </p>
-            </div>
-            <button type="button" className="button tonal" onClick={() => onOpenLesson(lesson.id)}>
-              Open
-            </button>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function PracticeQueueCard({ data }: { data: LmsDashboardData }) {
-  return (
-    <div className="widget-content">
-      <ul className="list-reset list-gap">
-        {data.practice_queue.map((set) => (
-          <li key={set.id}>
-            <strong>{set.title}</strong>
-            <p className="muted tiny">{set.focus}</p>
-            <small>
-              {set.problems} problems | due {new Date(set.due_date).toLocaleDateString('ru-RU')}
-            </small>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function MasteryTrendCard({ data }: { data: LmsDashboardData }) {
-  return (
-    <div className="widget-content">
-      <div className="trend-chart" aria-hidden>
-        {data.mastery_trend.map((point, index) => (
-          <div key={`${point}-${index}`} className="trend-col" style={{ height: `${Math.max(20, point)}%` }} />
-        ))}
-      </div>
-      <small className="muted">Last 6 sessions</small>
-    </div>
-  );
-}
-
-function renderTemplateContent(widget: WidgetConfig, data: LmsDashboardData, onOpenLesson: (lessonId: string) => void) {
-  switch (widget.template_id) {
-    case 'weak_topics_list':
-      return (
-        <div className="widget-content">
-          <ul className="list-reset list-gap">
-            {data.weak_topics.map((topic) => (
-              <li key={topic}>{topic}</li>
-            ))}
-          </ul>
-        </div>
-      );
-
-    case 'next_lesson_card':
-      return (
-        <div className="widget-content">
-          <p className="muted">Recommended next step</p>
-          <button type="button" className="button" onClick={() => onOpenLesson(data.next_lesson_id)}>
-            Open Next Lesson
-          </button>
-        </div>
-      );
-
-    case 'quick_actions':
-      return (
-        <div className="widget-content action-chips">
-          {data.quick_actions.map((action) => (
-            <button key={action.id} type="button" className="button outlined">
-              {action.label}
-            </button>
-          ))}
-        </div>
-      );
-
-    case 'formula_cheatsheet':
-      return (
-        <div className="widget-content">
-          <ul className="list-reset list-gap">
-            {data.formulas.map((formula) => (
-              <li key={formula} className="mono">
-                {formula}
-              </li>
-            ))}
-          </ul>
-        </div>
-      );
-
-    case 'study_streak_panel':
-      return (
-        <div className="widget-content">
-          <p className="value">{data.learner.streak_days} days</p>
-          <p className="muted">Current study streak</p>
-        </div>
-      );
-
-    case 'assignment_calendar':
-      return (
-        <div className="widget-content">
-          <ul className="list-reset list-gap">
-            {data.assignments.map((assignment) => (
-              <li key={`${assignment.title}-${assignment.due_date}`}>
-                <strong>{assignment.title}</strong>
-                <p className="muted tiny">Due {new Date(assignment.due_date).toLocaleDateString('ru-RU')}</p>
-              </li>
-            ))}
-          </ul>
-        </div>
-      );
-
-    case 'focus_timer':
-      return (
-        <div className="widget-content">
-          <p className="value">25:00</p>
-          <p className="muted">Pomodoro focus timer</p>
-          <button type="button" className="button tonal">
-            Start Focus
-          </button>
-        </div>
-      );
-
-    default:
-      return null;
-  }
-}
-
-function renderCapabilityContent(widget: WidgetConfig, data: LmsDashboardData, onOpenLesson: (lessonId: string) => void) {
-  if (widget.capability_id === 'math.progress_overview') {
-    return <StudyProgressCard data={data} />;
-  }
-  if (widget.capability_id === 'math.learning_path') {
-    return <LearningPathCard data={data} onOpenLesson={onOpenLesson} />;
-  }
-  if (widget.capability_id === 'math.practice_queue') {
-    return <PracticeQueueCard data={data} />;
-  }
-  if (widget.capability_id === 'math.mastery_trend') {
-    return <MasteryTrendCard data={data} />;
-  }
-
-  return <p className="muted tiny">Capability: {widget.capability_id}</p>;
-}
-
-function WidgetCard({
-  widget,
-  dashboard,
-  onOpenLesson,
-}: {
-  widget: WidgetConfig;
-  dashboard: LmsDashboardData;
-  onOpenLesson: (lessonId: string) => void;
-}) {
-  const templateContent = renderTemplateContent(widget, dashboard, onOpenLesson);
-
-  return (
-    <article className="widget">
-      <header className="widget__header">
-        <h4>{widget.title}</h4>
-        <span>{widget.kind}</span>
-      </header>
-
-      {templateContent ?? renderCapabilityContent(widget, dashboard, onOpenLesson)}
-      {widget.template_id ? <small className="muted tiny">Template: {widget.template_id}</small> : null}
-      {widget.protected ? <small className="badge">Protected</small> : null}
-    </article>
-  );
-}
-
-function SectionBlock({
-  section,
-  widgets,
-  dashboard,
-  onOpenLesson,
-}: {
-  section: SectionConfig;
-  widgets: WidgetConfig[];
-  dashboard: LmsDashboardData;
-  onOpenLesson: (lessonId: string) => void;
-}) {
-  return (
-    <article className="section-block">
-      <header>
-        <h4>{section.title}</h4>
-      </header>
-      <div className="section-grid">
-        {widgets.map((widget) => (
-          <WidgetCard key={widget.id} widget={widget} dashboard={dashboard} onOpenLesson={onOpenLesson} />
-        ))}
-      </div>
-    </article>
-  );
-}
-
-function DashboardView({
-  manifest,
-  dashboard,
-  onOpenLesson,
-}: {
-  manifest: UiManifest;
-  dashboard: LmsDashboardData;
-  onOpenLesson: (lessonId: string) => void;
-}) {
-  const maxColumnsRaw = manifest.layout_constraints.max_columns;
-  const maxColumns = typeof maxColumnsRaw === 'number' ? Math.max(1, Math.min(4, maxColumnsRaw)) : 2;
-  const style = { '--zone-columns': String(maxColumns) } as CSSProperties;
-
-  return (
-    <div className="layout-grid" style={style}>
-      {ZONES.map((zone) => {
-        const widgets = manifest.widgets.filter((widget) => widget.zone === zone);
-        const sections = manifest.sections.filter((section) => section.zone === zone);
-        const widgetMap = new Map(widgets.map((widget) => [widget.id, widget]));
-        const usedWidgetIds = new Set<string>();
-
-        const sectionBlocks = sections.map((section) => {
-          const children = section.child_widget_ids
-            .map((widgetId) => widgetMap.get(widgetId))
-            .filter((widget): widget is WidgetConfig => Boolean(widget));
-
-          children.forEach((widget) => usedWidgetIds.add(widget.id));
-          return { section, children };
-        });
-
-        const looseWidgets = widgets.filter((widget) => !usedWidgetIds.has(widget.id));
-
-        return (
-          <section key={zone} className="zone">
-            <h3>{zone}</h3>
-            {sectionBlocks.map(({ section, children }) => (
-              <SectionBlock
-                key={section.id}
-                section={section}
-                widgets={children}
-                dashboard={dashboard}
-                onOpenLesson={onOpenLesson}
-              />
-            ))}
-
-            {looseWidgets.length === 0 && sectionBlocks.length === 0 ? <p className="muted">No widgets</p> : null}
-            {looseWidgets.map((widget) => (
-              <WidgetCard key={widget.id} widget={widget} dashboard={dashboard} onOpenLesson={onOpenLesson} />
-            ))}
-          </section>
-        );
-      })}
-    </div>
-  );
-}
-
-function LessonView({ lesson }: { lesson: LmsLessonData }) {
-  return (
-    <section className="lesson-shell">
-      <article className="lesson-card">
-        <header className="lesson-header">
-          <h2>{lesson.title}</h2>
-          <p className="muted">
-            {lesson.topic} | {lesson.estimated_min} min
-          </p>
-        </header>
-
-        <section>
-          <h3>Learning Objectives</h3>
-          <ul>
-            {lesson.objectives.map((objective) => (
-              <li key={objective}>{objective}</li>
-            ))}
-          </ul>
-        </section>
-
-        <section>
-          <h3>Core Theory</h3>
-          <ul>
-            {lesson.theory_points.map((point) => (
-              <li key={point}>{point}</li>
-            ))}
-          </ul>
-        </section>
-      </article>
-
-      <article className="lesson-card">
-        <h3>Practice</h3>
-        <ol>
-          {lesson.exercises.map((exercise) => (
-            <li key={exercise.id}>
-              <strong>{exercise.prompt}</strong>
-              <p className="muted tiny">Type: {exercise.type}</p>
-            </li>
-          ))}
-        </ol>
-        <button type="button" className="button">
-          Start Practice Session
-        </button>
-      </article>
-    </section>
-  );
-}
-
-function formatDslIssue(issue: DuiDslValidationIssue): string {
-  return `[${issue.code}] ${issue.path}: ${issue.message}`;
-}
-
-export default function App() {
   const [manifest, setManifest] = useState<UiManifest | null>(null);
   const [previewManifest, setPreviewManifest] = useState<UiManifest | null>(null);
-  const [prompt, setPrompt] = useState('Сделай стиль минимализм и compact, добавь weak topics');
-  const [duiMode, setDuiMode] = useState<DuiMode>('extended');
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [revisions, setRevisions] = useState<UiManifest[]>([]);
-  const [dslRevisions, setDslRevisions] = useState<DuiDslDocument[]>([]);
-  const [dslSource, setDslSource] = useState('');
-  const [dslSourceDirty, setDslSourceDirty] = useState(false);
-  const [dslDraft, setDslDraft] = useState<DuiDslDocument | null>(null);
-  const [dslWarnings, setDslWarnings] = useState<string[]>([]);
-  const [dslValidationErrors, setDslValidationErrors] = useState<DuiDslValidationIssue[]>([]);
-  const [dslValidationWarnings, setDslValidationWarnings] = useState<DuiDslValidationIssue[]>([]);
-  const [dslValidationValid, setDslValidationValid] = useState<boolean | null>(null);
-  const [dashboard, setDashboard] = useState<LmsDashboardData | null>(null);
-  const [activeLesson, setActiveLesson] = useState<LmsLessonData | null>(null);
-  const [activeLessonId, setActiveLessonId] = useState<string>('lesson-linear-equations');
-  const [page, setPage] = useState<Page>('dashboard');
-  const surfaceContext = useMemo(
-    () => ({ surfaceId: SURFACE_ID, sessionId: SESSION_ID, mode: duiMode }),
-    [duiMode],
-  );
+  const [manifestRevisions, setManifestRevisions] = useState<UiManifest[]>([]);
+  const [currentDsl, setCurrentDsl] = useState<DuiDslDocument | null>(null);
+  const [draftDsl, setDraftDsl] = useState<DuiDslDocument | null>(null);
+  const [availableSurfaces, setAvailableSurfaces] = useState<UiSurfaceSummary[]>(FALLBACK_SURFACES);
+
+  const [dashboard, setDashboard] = useState<LmsDashboardData>(FALLBACK_DASHBOARD);
+  const [lessonData, setLessonData] = useState<LmsLessonData | null>(null);
+  const [lessonLoading, setLessonLoading] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  const [busyAction, setBusyAction] = useState<BusyAction>(null);
+  const [statusMessage, setStatusMessage] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
+
+  const [isMenuOpen, setMenuOpen] = useState(false);
+  const [isGeneratorOpen, setGeneratorOpen] = useState(false);
+  const [isSourceEditorOpen, setSourceEditorOpen] = useState(false);
+  const [targetRevision, setTargetRevision] = useState<number | null>(null);
 
   const activeManifest = previewManifest ?? manifest;
+  const currentRoute = useMemo(() => resolveRoute(currentPath), [currentPath]);
+  const activeSurfaceId = useMemo(() => surfaceForRoute(currentRoute), [currentRoute]);
+  const theme = useMemo(() => resolveStudioTheme(activeManifest), [activeManifest]);
+
+  const appThemeStyle = {
+    '--dui-bg': theme.bg,
+    '--dui-bg-accent': theme.backgroundAccent,
+    '--dui-surface': theme.surface,
+    '--dui-surface-muted': theme.surfaceMuted,
+    '--dui-border': theme.border,
+    '--dui-text': theme.text,
+    '--dui-muted': theme.muted,
+    '--dui-accent': theme.accent,
+    '--dui-accent-soft': theme.accentSoft,
+    '--dui-success': theme.success,
+    '--dui-warning': theme.warning,
+    '--dui-danger': theme.danger,
+    '--dui-shadow-soft': theme.shadow,
+    '--dui-radius-lg': theme.radiusLg,
+    '--dui-radius-md': theme.radiusMd,
+    '--dui-radius-sm': theme.radiusSm,
+  } as CSSProperties;
+
+  const currentRevision = manifest?.revision ?? '—';
+  const dslRevision = currentDsl?.meta.revision ?? '—';
+
+  const sortedRevisions = useMemo(
+    () => [...manifestRevisions].sort((left, right) => right.revision - left.revision),
+    [manifestRevisions],
+  );
+  const surfaceOptions = useMemo(() => {
+    const raw = availableSurfaces.length > 0 ? availableSurfaces : FALLBACK_SURFACES;
+    return [...raw].sort((left, right) => left.surface_id.localeCompare(right.surface_id));
+  }, [availableSurfaces]);
 
   useEffect(() => {
-    void (async () => {
-      try {
-        const [current, history, dashboardData, currentDsl, dslHistory] = await Promise.all([
-          fetchCurrentManifest({ surfaceId: SURFACE_ID, sessionId: SESSION_ID }),
-          fetchRevisions({ surfaceId: SURFACE_ID, sessionId: SESSION_ID }),
-          fetchDashboardData(),
-          fetchCurrentDslDocument({ surfaceId: SURFACE_ID, sessionId: SESSION_ID }),
-          fetchDslRevisions({ surfaceId: SURFACE_ID, sessionId: SESSION_ID }),
-        ]);
-        setManifest(current);
-        setRevisions(history);
-        setDslDraft(currentDsl);
-        setDslSource(serializeDuiDslDocument(currentDsl));
-        setDslSourceDirty(false);
-        setDslRevisions(dslHistory);
-        setDashboard(dashboardData);
-        if (dashboardData.learning_path.length > 0) {
-          setActiveLessonId(dashboardData.learning_path[0].id);
-        }
-      } catch (unknownError) {
-        setError((unknownError as Error).message);
-      }
-    })();
+    setDraftDsl(null);
+    setPreviewManifest(null);
+    setTargetRevision(null);
+    void refreshAll(activeSurfaceId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSurfaceId]);
+
+  useEffect(() => {
+    const onPopState = (): void => {
+      setCurrentPath(normalizePathname(window.location.pathname));
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
   useEffect(() => {
-    void (async () => {
-      if (!activeLessonId) {
-        return;
-      }
-      try {
-        const lesson = await fetchLesson(activeLessonId);
-        setActiveLesson(lesson);
-      } catch (unknownError) {
-        setError((unknownError as Error).message);
-      }
-    })();
-  }, [activeLessonId]);
-
-  useEffect(() => {
-    if (activeManifest) {
-      applyTheme(activeManifest.theme);
-    }
-  }, [activeManifest]);
-
-  const olderRevision = useMemo(() => {
-    if (!manifest || revisions.length < 2) {
-      return null;
-    }
-    return revisions[revisions.length - 2].revision;
-  }, [manifest, revisions]);
-
-  function resetDslValidationState() {
-    setDslValidationValid(null);
-    setDslValidationErrors([]);
-    setDslValidationWarnings([]);
-  }
-
-  function applyDslValidationState(valid: boolean, errors: DuiDslValidationIssue[], warnings: DuiDslValidationIssue[]) {
-    setDslValidationValid(valid);
-    setDslValidationErrors(errors);
-    setDslValidationWarnings(warnings);
-  }
-
-  async function handleGenerateDslFromPrompt() {
-    if (!prompt.trim()) {
+    if (currentRoute.kind !== 'lesson') {
+      setLessonData(null);
+      setLessonLoading(false);
       return;
     }
-    setBusy(true);
-    setError(null);
-    try {
-      const response = await requestDslIntent(prompt, duiMode, surfaceContext);
-      setDslDraft(response.document);
-      setDslSource(serializeDuiDslDocument(response.document));
-      setDslSourceDirty(false);
-      setDslWarnings(response.warnings);
-      applyDslValidationState(
-        response.validation_result.valid,
-        response.validation_result.errors,
-        response.validation_result.warnings,
-      );
-      setPreviewManifest(response.preview_manifest);
-    } catch (unknownError) {
-      setError((unknownError as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
 
-  async function handleParseDslSource() {
-    if (!dslSource.trim()) {
-      return;
-    }
-    setBusy(true);
-    setError(null);
+    let cancelled = false;
+    const fallback = FALLBACK_LESSONS[currentRoute.lessonId] ?? null;
+    setLessonData(fallback);
+    setLessonLoading(true);
+
+    void fetchLessonData(currentRoute.lessonId)
+      .then((payload) => {
+        if (!cancelled) {
+          setLessonData(payload);
+        }
+      })
+      .catch(() => {
+        if (!cancelled && !fallback) {
+          setLessonData(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLessonLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentRoute]);
+
+  async function refreshAll(surfaceId: string): Promise<void> {
+    setBusyAction('refresh');
+    setErrorMessage('');
+
     try {
-      const response = await parseDslSource(dslSource, surfaceContext);
-      setDslDraft(response.document);
-      setDslSourceDirty(false);
-      setDslWarnings([]);
-      applyDslValidationState(
-        response.validation_result.valid,
-        response.validation_result.errors,
-        response.validation_result.warnings,
+      const [manifestResult, dslResult, revisionsResult, dashboardResult, surfacesResult] = await Promise.allSettled([
+        fetchCurrentManifest(surfaceId),
+        fetchCurrentDsl(surfaceId),
+        fetchManifestRevisions(surfaceId),
+        fetchDashboardData(),
+        fetchSurfaces(),
+      ]);
+
+      if (manifestResult.status === 'fulfilled') {
+        setManifest(manifestResult.value);
+      }
+
+      if (dslResult.status === 'fulfilled') {
+        setCurrentDsl(dslResult.value);
+      }
+
+      if (revisionsResult.status === 'fulfilled') {
+        setManifestRevisions(revisionsResult.value);
+
+        if (targetRevision === null && revisionsResult.value.length > 1) {
+          setTargetRevision(revisionsResult.value[revisionsResult.value.length - 2]?.revision ?? null);
+        }
+      }
+
+      if (dashboardResult.status === 'fulfilled') {
+        setDashboard(dashboardResult.value);
+      }
+
+      if (surfacesResult.status === 'fulfilled') {
+        if (surfacesResult.value.length > 0) {
+          setAvailableSurfaces(surfacesResult.value);
+        }
+      }
+
+      const failures = [manifestResult, dslResult, revisionsResult, dashboardResult, surfacesResult].filter(
+        (result) => result.status === 'rejected',
       );
-      if (response.compiled_manifest) {
-        setPreviewManifest(response.compiled_manifest);
+
+      if (failures.length > 0) {
+        setErrorMessage('Бэкенд частично недоступен. Включён локальный резервный режим для предпросмотра.');
       } else {
-        setPreviewManifest(null);
+        setStatusMessage('Поверхность синхронизирована');
       }
-    } catch (unknownError) {
-      setError((unknownError as Error).message);
+    } catch (error) {
+      setErrorMessage(describeError(error));
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   }
 
-  async function handleValidateDslDocument() {
-    if (!dslDraft) {
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      const response = await validateDslDocument(dslDraft, surfaceContext);
-      applyDslValidationState(response.result.valid, response.result.errors, response.result.warnings);
-      if (response.compiled_manifest) {
-        setPreviewManifest(response.compiled_manifest);
-      }
-    } catch (unknownError) {
-      setError((unknownError as Error).message);
-    } finally {
-      setBusy(false);
+  async function refreshManifestAndDsl(surfaceId: string): Promise<void> {
+    const [manifestValue, dslValue, revisionsValue] = await Promise.all([
+      fetchCurrentManifest(surfaceId),
+      fetchCurrentDsl(surfaceId),
+      fetchManifestRevisions(surfaceId),
+    ]);
+
+    setManifest(manifestValue);
+    setCurrentDsl(dslValue);
+    setManifestRevisions(revisionsValue);
+
+    if (revisionsValue.length > 1) {
+      setTargetRevision(revisionsValue[revisionsValue.length - 2]?.revision ?? null);
     }
   }
 
-  async function handleCommitDslDocument() {
-    if (!dslDraft) {
+  async function handleGenerate(): Promise<void> {
+    if (!prompt.trim()) {
+      setErrorMessage('Введите запрос для генерации.');
+      setMenuOpen(false);
       return;
     }
-    setBusy(true);
-    setError(null);
+
+    setBusyAction('generate');
+    setErrorMessage('');
+    setStatusMessage('');
+
     try {
-      const response = await commitDslDocument(
-        dslDraft,
-        'poc-user',
-        manifest?.revision,
-        dslDraft.meta.revision,
-        surfaceContext,
+      const response = await generateDslIntent({
+        prompt: prompt.trim(),
+        mode,
+        surfaceId: activeSurfaceId,
+        sessionId: SESSION_ID,
+      });
+
+      setDraftDsl(response.document);
+      setPreviewManifest(response.preview_manifest);
+      setStatusMessage(
+        response.validation_result.valid
+          ? `Черновик сгенерирован. Предупреждений: ${response.warnings.length}`
+          : 'Черновик сгенерирован, но есть ошибки валидации',
       );
+    } catch (error) {
+      setErrorMessage(describeError(error));
+    } finally {
+      setBusyAction(null);
+      setMenuOpen(false);
+    }
+  }
+
+  async function handleParseSource(): Promise<void> {
+    if (!sourceText.trim()) {
+      setErrorMessage('Вставьте DUI-исходник перед разбором.');
+      return;
+    }
+
+    setBusyAction('parse');
+    setErrorMessage('');
+    setStatusMessage('');
+
+    try {
+      const response = await parseDslSource({ source: sourceText });
+      setDraftDsl(response.document);
+      setPreviewManifest(response.compiled_manifest);
+
+      const parsedSurfaceId = response.document.surface.id.trim();
+      if (parsedSurfaceId && parsedSurfaceId !== activeSurfaceId) {
+        switchSurface(parsedSurfaceId);
+      }
+
+      if (response.validation_result.valid) {
+        if (parsedSurfaceId && parsedSurfaceId !== activeSurfaceId) {
+          setStatusMessage(`Исходник разобран. Активная поверхность переключена на ${parsedSurfaceId}.`);
+        } else {
+          setStatusMessage('Исходник разобран и готов к коммиту.');
+        }
+      } else {
+        setErrorMessage('Исходник разобран, но есть ошибки валидации. Исправьте перед коммитом.');
+      }
+    } catch (error) {
+      setErrorMessage(describeError(error));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleCommit(): Promise<void> {
+    const documentToCommit = draftDsl ?? currentDsl;
+
+    if (!documentToCommit) {
+      setErrorMessage('Нет документа для коммита. Сначала сгенерируйте или вставьте исходник.');
+      setMenuOpen(false);
+      return;
+    }
+
+    setBusyAction('commit');
+    setErrorMessage('');
+    setStatusMessage('');
+
+    try {
+      const response = await commitDslDocument({
+        document: documentToCommit,
+        surfaceId: activeSurfaceId,
+        expectedManifestRevision: manifest?.revision,
+        expectedDslRevision: currentDsl?.meta.revision,
+      });
+
+      setManifest(response.manifest);
+      setCurrentDsl(response.document);
+      setDraftDsl(null);
+      setPreviewManifest(null);
+      setStatusMessage(`Коммит выполнен. Ревизия манифеста: ${response.manifest.revision}`);
+
+      await refreshManifestAndDsl(activeSurfaceId);
+    } catch (error) {
+      setErrorMessage(describeError(error));
+    } finally {
+      setBusyAction(null);
+      setMenuOpen(false);
+    }
+  }
+
+  async function handleRevert(): Promise<void> {
+    if (targetRevision === null) {
+      setErrorMessage('Нет целевой ревизии для отката.');
+      setMenuOpen(false);
+      return;
+    }
+
+    setBusyAction('revert');
+    setErrorMessage('');
+    setStatusMessage('');
+
+    try {
+      const response = await revertManifest({ targetRevision, surfaceId: activeSurfaceId });
       setManifest(response.manifest);
       setPreviewManifest(null);
-      setDslDraft(response.document);
-      setDslSource(serializeDuiDslDocument(response.document));
-      setDslSourceDirty(false);
-      setDslWarnings([]);
-      resetDslValidationState();
-      const [manifestHistory, dslHistory] = await Promise.all([
-        fetchRevisions(surfaceContext),
-        fetchDslRevisions(surfaceContext),
-      ]);
-      setRevisions(manifestHistory);
-      setDslRevisions(dslHistory);
-    } catch (unknownError) {
-      setError((unknownError as Error).message);
+      setDraftDsl(null);
+      setStatusMessage(`Откат выполнен до ревизии ${targetRevision}`);
+      await refreshManifestAndDsl(activeSurfaceId);
+    } catch (error) {
+      setErrorMessage(describeError(error));
     } finally {
-      setBusy(false);
+      setBusyAction(null);
+      setMenuOpen(false);
     }
   }
 
-  async function handleLoadCurrentDsl() {
-    setBusy(true);
-    setError(null);
-    try {
-      const [currentDsl, dslHistory] = await Promise.all([
-        fetchCurrentDslDocument(surfaceContext),
-        fetchDslRevisions(surfaceContext),
-      ]);
-      setDslDraft(currentDsl);
-      setDslSource(serializeDuiDslDocument(currentDsl));
-      setDslSourceDirty(false);
-      setDslWarnings([]);
-      resetDslValidationState();
-      setDslRevisions(dslHistory);
-      setPreviewManifest(null);
-    } catch (unknownError) {
-      setError((unknownError as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleRevertManifest() {
-    if (!olderRevision) {
+  function navigateTo(path: string): void {
+    const target = normalizePathname(path);
+    if (target === currentPath) {
       return;
     }
-    setBusy(true);
-    setError(null);
-    try {
-      const revertedManifest = await revertRevision(olderRevision, surfaceContext);
-      setManifest(revertedManifest);
-      setPreviewManifest(null);
-      setRevisions(await fetchRevisions(surfaceContext));
-    } catch (unknownError) {
-      setError((unknownError as Error).message);
-    } finally {
-      setBusy(false);
+    window.history.pushState({}, '', target);
+    setCurrentPath(target);
+    setMenuOpen(false);
+  }
+
+  function openLesson(lessonId: string): void {
+    navigateTo(`/lesson/${encodeURIComponent(lessonId)}`);
+  }
+
+  function openDashboard(): void {
+    navigateTo('/dashboard');
+  }
+
+  function switchSurface(surfaceId: string): void {
+    const normalized = surfaceId.trim();
+    if (!normalized || normalized === activeSurfaceId) {
+      return;
     }
+
+    const lessonId = currentRoute.kind === 'lesson' ? currentRoute.lessonId : dashboard.next_lesson_id || DEFAULT_LESSON_ID;
+    navigateTo(routeForSurface(normalized, lessonId));
   }
 
-  function openLesson(lessonId: string) {
-    setActiveLessonId(lessonId);
-    setPage('lesson');
+  function handleToggleGeneratorEditor(): void {
+    setSourceEditorOpen(false);
+    setGeneratorOpen((previous) => !previous);
+    setMenuOpen(false);
   }
 
-  if (!manifest || !dashboard || !activeLesson) {
-    return (
-      <main className="app-shell">
-        {error ? <section className="error">{error}</section> : 'Loading...'}
-      </main>
-    );
+  function handleToggleSourceEditor(): void {
+    setGeneratorOpen(false);
+    setSourceEditorOpen((previous) => !previous);
+    setMenuOpen(false);
+  }
+
+  function setStarterSource(): void {
+    setSourceText(starterDslSource(activeSurfaceId));
+  }
+
+  function closeSourceEditor(): void {
+    setSourceEditorOpen(false);
+  }
+
+  function closeGeneratorEditor(): void {
+    setGeneratorOpen(false);
   }
 
   return (
-    <main className="app-shell">
-      <header className="topbar">
+    <div className="studio-root" style={appThemeStyle}>
+      <header className="studio-topbar">
         <div>
-          <h1>MathPath LMS</h1>
-          <p>
-            Learner: {dashboard.learner.name} | Revision {manifest.revision} | Theme {manifest.theme.profile} |
-            {' '}Mode {duiMode} | Surface {SURFACE_ID} | DUI rev {dslDraft?.meta.revision ?? '-'}
+          <p className="eyebrow">DUI Студия</p>
+          <h1>Конструктор адаптивного интерфейса</h1>
+          <p className="subtle">
+            поверхность: <code>{activeSurfaceId}</code> | ревизия манифеста: <strong>{currentRevision}</strong> | ревизия DSL:{' '}
+            <strong>{dslRevision}</strong>
           </p>
         </div>
-        <nav className="tab-row" aria-label="Main pages">
+
+        <div className="topbar-actions">
+          <label className="surface-picker" htmlFor="surface-select">
+            <span>Surface</span>
+            <select
+              id="surface-select"
+              className="surface-select"
+              value={activeSurfaceId}
+              onChange={(event) => switchSurface(event.target.value)}
+              disabled={busyAction !== null}
+            >
+              {surfaceOptions.map((surface) => (
+                <option key={surface.surface_id} value={surface.surface_id}>
+                  {surface.surface_id}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {currentRoute.kind === 'lesson' ? (
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={openDashboard}
+              disabled={busyAction !== null}
+            >
+              К панели
+            </button>
+          ) : null}
+
           <button
             type="button"
-            className={`tab-button ${page === 'dashboard' ? 'active' : ''}`}
-            onClick={() => setPage('dashboard')}
+            className="secondary-button"
+            onClick={() => void refreshAll(activeSurfaceId)}
+            disabled={busyAction !== null}
           >
-            Dashboard
+            Обновить
           </button>
+
           <button
             type="button"
-            className={`tab-button ${page === 'lesson' ? 'active' : ''}`}
-            onClick={() => setPage('lesson')}
+            className="menu-button"
+            onClick={() => setMenuOpen((current) => !current)}
+            aria-expanded={isMenuOpen}
           >
-            Lesson
+            ☰ Действия DSL
           </button>
-        </nav>
+
+          {isMenuOpen ? (
+            <div className="menu-popover">
+              <button type="button" onClick={handleToggleGeneratorEditor} disabled={busyAction !== null}>
+                Открыть генератор
+              </button>
+              <button type="button" onClick={() => void handleCommit()} disabled={busyAction !== null}>
+                Закоммитить
+              </button>
+              <button type="button" onClick={() => void handleRevert()} disabled={busyAction !== null}>
+                Откатить
+              </button>
+              <button type="button" onClick={handleToggleSourceEditor} disabled={busyAction !== null}>
+                Вставить исходник
+              </button>
+            </div>
+          ) : null}
+        </div>
       </header>
 
-      <section className="assistant-panel">
-        <label htmlFor="intent">DUI Assistant Prompt</label>
-        <textarea
-          id="intent"
-          value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
-          rows={3}
-          placeholder="Например: сделай минимализм, добавь weak topics и секция практика"
-        />
-        <div className="mode-row">
-          <label htmlFor="mode">Mode</label>
-          <select id="mode" value={duiMode} onChange={(event) => setDuiMode(event.target.value as DuiMode)}>
-            <option value="safe">safe</option>
-            <option value="extended">extended</option>
-            <option value="experimental">experimental</option>
-          </select>
-        </div>
-        <div className="actions">
-          <button type="button" className="button" onClick={handleGenerateDslFromPrompt} disabled={busy}>
-            Generate DUI
-          </button>
-          <button type="button" className="button tonal" onClick={handleParseDslSource} disabled={busy || !dslSource.trim()}>
-            Parse Source
-          </button>
-          <button
-            type="button"
-            className="button tonal"
-            onClick={handleValidateDslDocument}
-            disabled={busy || !dslDraft || dslSourceDirty}
-          >
-            Validate DUI
-          </button>
-          <button
-            type="button"
-            className="button tonal"
-            onClick={handleCommitDslDocument}
-            disabled={busy || !dslDraft || dslValidationValid === false || dslSourceDirty}
-          >
-            Commit DUI
-          </button>
-          <button type="button" className="button outlined" onClick={handleLoadCurrentDsl} disabled={busy}>
-            Load Current DUI
-          </button>
-          <button
-            type="button"
-            className="button outlined"
-            onClick={handleRevertManifest}
-            disabled={busy || !olderRevision}
-          >
-            Revert
-          </button>
-          <button
-            type="button"
-            className="button outlined"
-            onClick={() => {
-              setDslWarnings([]);
-              resetDslValidationState();
-              setPreviewManifest(null);
-            }}
-          >
-            Clear Preview
-          </button>
-        </div>
-        <label htmlFor="dsl-source">DUI Source</label>
-        <textarea
-          id="dsl-source"
-          className="dsl-source-editor mono"
-          value={dslSource}
-          onChange={(event) => {
-            setDslSource(event.target.value);
-            setDslSourceDirty(true);
-          }}
-          rows={16}
-          placeholder="surface math_lms.dashboard { ... }"
-        />
-      </section>
+      <main className="studio-main">
+        {statusMessage ? <p className="status-message global-message">{statusMessage}</p> : null}
+        {errorMessage ? <p className="error-message global-message">{errorMessage}</p> : null}
 
-      {dslDraft ? (
-        <section className="patch-summary">
-          <h2>DUI Draft</h2>
-          <p>
-            Document: {dslDraft.meta.document_id} | revision: {dslDraft.meta.revision} | nodes: {dslDraft.nodes.length} |
-            {' '}actions: {dslDraft.actions.length} | bindings: {dslDraft.bindings.length}
-          </p>
-          <p>
-            Validation: {dslValidationValid === null ? 'not checked' : dslValidationValid ? 'valid' : 'invalid'} |
-            {' '}Manifest revisions: {revisions.length} | DUI revisions: {dslRevisions.length}
-          </p>
-          {dslSourceDirty ? <p className="muted tiny">Source changed locally. Run Parse Source before Validate/Commit.</p> : null}
-          {dslWarnings.length ? (
-            <div className="warnings">
-              {dslWarnings.map((warning) => (
-                <p key={warning}>{warning}</p>
-              ))}
+        {currentRoute.kind === 'lesson' ? (
+          <LessonPage
+            lesson={lessonData}
+            manifest={activeManifest}
+            loading={lessonLoading}
+            onBack={openDashboard}
+            onOpenLesson={openLesson}
+          />
+        ) : (
+          <section className="panel preview-panel">
+            <header className="panel-header">
+              <h2>Предпросмотр поверхности</h2>
+              <div className="preview-actions">
+                <span className="status-dot">{previewManifest ? 'Черновой предпросмотр' : 'Текущий манифест'}</span>
+                <span className="status-dot">{busyAction ? `В работе: ${getBusyActionLabel(busyAction)}` : 'Готово'}</span>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => setSidebarCollapsed((current) => !current)}
+                >
+                  {sidebarCollapsed ? 'Показать сайдбар' : 'Скрыть сайдбар'}
+                </button>
+              </div>
+            </header>
+
+            {activeManifest ? (
+              <ManifestCanvas
+                manifest={activeManifest}
+                dashboard={dashboard}
+                sidebarCollapsed={sidebarCollapsed}
+                onOpenLesson={openLesson}
+              />
+            ) : (
+              <div className="empty-state">
+                <p>Манифест не загружен. Нажмите «Обновить».</p>
+              </div>
+            )}
+          </section>
+        )}
+      </main>
+
+      {isGeneratorOpen ? (
+        <div className="generator-floating-backdrop" onClick={closeGeneratorEditor}>
+          <aside className="generator-floating-panel" onClick={(event) => event.stopPropagation()}>
+            <div className="source-editor-header">
+              <h3>Генератор DSL</h3>
+              <div className="source-floating-actions">
+                <button type="button" className="link-button" onClick={closeGeneratorEditor}>
+                  Закрыть
+                </button>
+              </div>
             </div>
-          ) : null}
-          {dslValidationErrors.length ? (
-            <div className="warnings">
-              <p>Validation errors:</p>
-              <ul className="list-reset list-gap">
-                {dslValidationErrors.map((issue, index) => (
-                  <li key={`${issue.code}-${index}`}>{formatDslIssue(issue)}</li>
+
+            <label className="field-label" htmlFor="intent-prompt">
+              Запрос (интент)
+            </label>
+            <textarea
+              id="intent-prompt"
+              className="prompt-textarea generator-textarea"
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              rows={6}
+              placeholder="Опишите изменение интерфейса..."
+            />
+
+            <div className="control-grid">
+              <label className="field-label" htmlFor="mode-select">
+                Режим
+              </label>
+              <select id="mode-select" value={mode} onChange={(event) => setMode(event.target.value as DuiMode)}>
+                {MODE_OPTIONS.map((item) => (
+                  <option key={item} value={item}>
+                    {MODE_LABELS[item]}
+                  </option>
                 ))}
-              </ul>
-            </div>
-          ) : null}
-          {dslValidationWarnings.length ? (
-            <div className="warnings">
-              <p>Validation warnings:</p>
-              <ul className="list-reset list-gap">
-                {dslValidationWarnings.map((issue, index) => (
-                  <li key={`${issue.code}-${index}`}>{formatDslIssue(issue)}</li>
+              </select>
+
+              <label className="field-label" htmlFor="revert-select">
+                Цель отката
+              </label>
+              <select
+                id="revert-select"
+                value={targetRevision ?? ''}
+                onChange={(event) => setTargetRevision(Number(event.target.value))}
+                disabled={sortedRevisions.length === 0}
+              >
+                {sortedRevisions.length === 0 ? <option value="">нет</option> : null}
+                {sortedRevisions.map((revision) => (
+                  <option key={revision.manifest_id} value={revision.revision}>
+                    ревизия {revision.revision}
+                  </option>
                 ))}
-              </ul>
+              </select>
             </div>
-          ) : null}
-        </section>
+
+            <div className="source-actions generator-actions">
+              <button type="button" className="secondary-button" onClick={() => void handleGenerate()} disabled={busyAction !== null}>
+                Сгенерировать
+              </button>
+              <button type="button" className="secondary-button" onClick={() => void handleCommit()} disabled={busyAction !== null}>
+                Закоммитить
+              </button>
+              <button type="button" className="secondary-button" onClick={() => void handleRevert()} disabled={busyAction !== null}>
+                Откатить
+              </button>
+            </div>
+          </aside>
+        </div>
       ) : null}
 
-      {error ? <section className="error">{error}</section> : null}
-
-      {page === 'dashboard' && activeManifest ? (
-        <DashboardView manifest={activeManifest} dashboard={dashboard} onOpenLesson={openLesson} />
+      {isSourceEditorOpen ? (
+        <div className="source-floating-backdrop" onClick={closeSourceEditor}>
+          <aside className="source-floating-panel" onClick={(event) => event.stopPropagation()}>
+            <div className="source-editor-header">
+              <h3>DUI-исходник</h3>
+              <div className="source-floating-actions">
+                <button type="button" className="link-button" onClick={setStarterSource}>
+                  Подставить шаблон
+                </button>
+                <button type="button" className="link-button" onClick={closeSourceEditor}>
+                  Закрыть
+                </button>
+              </div>
+            </div>
+            <textarea
+              className="source-textarea source-floating-textarea"
+              value={sourceText}
+              onChange={(event) => setSourceText(event.target.value)}
+              rows={20}
+              placeholder="Вставьте DUI-исходник..."
+            />
+            <div className="source-actions">
+              <button type="button" className="secondary-button" onClick={() => void handleParseSource()} disabled={busyAction !== null}>
+                Разобрать исходник
+              </button>
+            </div>
+          </aside>
+        </div>
       ) : null}
-      {page === 'lesson' ? <LessonView lesson={activeLesson} /> : null}
-    </main>
+    </div>
   );
 }

@@ -60,6 +60,8 @@ class WidgetConfig(BaseModel):
     protected: bool = False
     template_id: str | None = None
     props: dict[str, Any] = Field(default_factory=dict)
+    style: dict[str, Any] = Field(default_factory=dict)
+    layout: dict[str, Any] = Field(default_factory=dict)
 
 
 class SectionConfig(BaseModel):
@@ -68,6 +70,7 @@ class SectionConfig(BaseModel):
     zone: Zone
     child_widget_ids: list[str] = Field(default_factory=list)
     layout: dict[str, Any] = Field(default_factory=dict)
+    style: dict[str, Any] = Field(default_factory=dict)
 
 
 class UiManifest(BaseModel):

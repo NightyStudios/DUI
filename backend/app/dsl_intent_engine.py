@@ -2,10 +2,19 @@ from __future__ import annotations
 
 import json
 
-from .llm_gateway import LlmGateway
+from .color_intent import infer_button_theme_tokens
 from .dsl_models import DuiDslDocument, DuiDslNode
 from .dsl_seed import LESSON_SURFACE_ID
+from .llm_gateway import LlmGateway
 from .models import DuiMode
+from .prompt_rules import (
+    infer_layout_constraint_overrides,
+    infer_theme_token_overrides,
+    normalize_prompt,
+    wants_focus_only,
+    wants_low_bandwidth,
+    wants_sidebar_to_top,
+)
 
 
 class DuiDslIntentEngine:
@@ -64,7 +73,8 @@ class DuiDslIntentEngine:
                 "Do not include markdown fences.",
                 "Keep document syntactically valid DUI document model.",
                 "In safe mode, only change theme profile/density/tokens.",
-                "Preserve node/action/binding ids when possible.",
+                "Preserve widget/group/page ids when possible.",
+                "Preserve node/action/binding ids when legacy node model is present.",
             ],
             "output_schema": {
                 "document": "full DUI document object",
@@ -83,7 +93,7 @@ class DuiDslIntentEngine:
         current_document: DuiDslDocument,
         mode: DuiMode,
     ) -> tuple[DuiDslDocument, list[str]]:
-        normalized = prompt.lower().strip()
+        normalized = normalize_prompt(prompt)
         document = current_document.model_copy(deep=True)
         warnings: list[str] = []
         changed = False
@@ -108,26 +118,134 @@ class DuiDslIntentEngine:
             document.theme.density = "comfortable"
             changed = True
 
-        if ("кнопк" in normalized or "button" in normalized) and any(
-            token in normalized for token in ["красн", "red", "красный", "красные"]
-        ):
-            document.theme.tokens["accent"] = "#dc2626"
-            document.theme.tokens["accent_container"] = "#fee2e2"
+        theme_tokens = infer_theme_token_overrides(prompt)
+        button_theme_tokens = infer_button_theme_tokens(prompt)
+        if button_theme_tokens:
+            theme_tokens.update(button_theme_tokens)
+        if theme_tokens:
+            document.theme.tokens.update(theme_tokens)
+            changed = True
+
+        layout_overrides = infer_layout_constraint_overrides(prompt)
+        if layout_overrides:
+            document.layout_constraints.update(layout_overrides)
             changed = True
 
         if mode in {"extended", "experimental"}:
+            if wants_sidebar_to_top(prompt):
+                changed = DuiDslIntentEngine._move_node_to_zone(document, node_id="practice_queue", zone="header") or changed
+
+            if any(token in normalized for token in ["убери сайдбар", "hide sidebar", "без сайдбара"]):
+                changed = DuiDslIntentEngine._move_node_to_zone(document, node_id="practice_queue", zone="content") or changed
+                document.layout_constraints["sidebar_width"] = "narrow"
+                changed = True
+
             if any(token in normalized for token in ["weak topics", "слаб", "слабые темы"]):
                 changed = DuiDslIntentEngine._ensure_weak_topics_widget(document) or changed
 
-            if any(token in normalized for token in ["practice section", "секция практика"]):
+            if any(token in normalized for token in ["practice section", "секция практика", "секцию практика"]):
                 changed = DuiDslIntentEngine._ensure_practice_section(document) or changed
 
             if any(token in normalized for token in ["фокус на практик", "practice focus", "больше практик"]):
                 changed = DuiDslIntentEngine._move_practice_to_content(document) or changed
 
+            if wants_focus_only(prompt):
+                changed = DuiDslIntentEngine._move_practice_to_content(document) or changed
+                changed = DuiDslIntentEngine._remove_node(document, "learning_path") or changed
+
+            if wants_low_bandwidth(prompt):
+                changed = DuiDslIntentEngine._remove_node(document, "mastery_trend") or changed
+
+            if any(token in normalized for token in ["быстрые действия", "quick actions"]):
+                changed = (
+                    DuiDslIntentEngine._ensure_template_widget(
+                        document,
+                        node_id="quick_actions_1",
+                        node_type="layout.panel",
+                        title="Quick Actions",
+                        zone="header",
+                        template_id="quick_actions",
+                        capability_id="math.quick_actions",
+                    )
+                    or changed
+                )
+
+            if any(token in normalized for token in ["формул", "formula"]):
+                changed = (
+                    DuiDslIntentEngine._ensure_template_widget(
+                        document,
+                        node_id="formula_cheatsheet_1",
+                        node_type="layout.list",
+                        title="Formula Cheatsheet",
+                        zone="content",
+                        template_id="formula_cheatsheet",
+                        capability_id="math.formulas",
+                    )
+                    or changed
+                )
+
+            if any(token in normalized for token in ["next lesson", "следующ", "next step"]):
+                changed = (
+                    DuiDslIntentEngine._ensure_template_widget(
+                        document,
+                        node_id="next_lesson_card_1",
+                        node_type="layout.card",
+                        title="Next Lesson",
+                        zone="content",
+                        template_id="next_lesson_card",
+                        capability_id="math.next_lesson",
+                    )
+                    or changed
+                )
+
+            if any(token in normalized for token in ["дедлайн", "deadline", "assignment calendar"]):
+                changed = (
+                    DuiDslIntentEngine._ensure_template_widget(
+                        document,
+                        node_id="assignment_calendar_1",
+                        node_type="data.data_table",
+                        title="Assignment Calendar",
+                        zone="content",
+                        template_id="assignment_calendar",
+                        capability_id="math.assignments",
+                    )
+                    or changed
+                )
+
+            if any(token in normalized for token in ["focus timer", "таймер", "pomodoro"]):
+                changed = (
+                    DuiDslIntentEngine._ensure_template_widget(
+                        document,
+                        node_id="focus_timer_1",
+                        node_type="layout.card",
+                        title="Focus Timer",
+                        zone="content",
+                        template_id="focus_timer",
+                        capability_id="math.focus_timer",
+                    )
+                    or changed
+                )
+
+            if any(token in normalized for token in ["streak", "геймифик", "gamif"]):
+                changed = (
+                    DuiDslIntentEngine._ensure_template_widget(
+                        document,
+                        node_id="study_streak_panel_1",
+                        node_type="layout.panel",
+                        title="Study Streak",
+                        zone="header",
+                        template_id="study_streak_panel",
+                        capability_id="math.study_streak",
+                    )
+                    or changed
+                )
+
+            if any(token in normalized for token in ["mentor review", "менторск", "менторского ревью"]):
+                changed = DuiDslIntentEngine._ensure_mentor_review_section(document) or changed
+
         if not changed:
             warnings.append(
-                "DUI intent fallback did not detect known commands. Try: minimal, compact, weak topics, practice section."
+                "DUI intent fallback did not detect known commands. Try: minimal, compact, make buttons #ccff00, weak topics, practice section."
             )
 
         if document.surface.id == LESSON_SURFACE_ID and mode == "safe":
@@ -197,22 +315,115 @@ class DuiDslIntentEngine:
         return True
 
     @staticmethod
+    def _ensure_mentor_review_section(document: DuiDslDocument) -> bool:
+        if DuiDslIntentEngine._find_node(document, "mentor_review") is not None:
+            return False
+
+        if DuiDslIntentEngine._find_node(document, "learning_path") is None:
+            return False
+        if DuiDslIntentEngine._find_node(document, "practice_queue") is None:
+            return False
+
+        changed = DuiDslIntentEngine._move_node_to_zone(document, node_id="practice_queue", zone="content")
+
+        section = DuiDslNode(
+            id="mentor_review",
+            type="layout.section",
+            props={"title": "Mentor Review", "zone": "content"},
+            layout={"columns": 2},
+            children=["learning_path", "practice_queue"],
+        )
+        document.nodes.append(section)
+        changed = True
+        content = DuiDslIntentEngine._find_region(document, "content")
+        if content and "mentor_review" not in content.children:
+            content.children.append("mentor_review")
+            changed = True
+        return changed
+
+    @staticmethod
     def _move_practice_to_content(document: DuiDslDocument) -> bool:
-        node = DuiDslIntentEngine._find_node(document, "practice_queue")
+        return DuiDslIntentEngine._move_node_to_zone(document, node_id="practice_queue", zone="content")
+
+    @staticmethod
+    def _move_node_to_zone(document: DuiDslDocument, *, node_id: str, zone: str) -> bool:
+        node = DuiDslIntentEngine._find_node(document, node_id)
         if node is None:
             return False
 
         changed = False
-        if node.props.get("zone") != "content":
-            node.props["zone"] = "content"
+        if node.props.get("zone") != zone:
+            node.props["zone"] = zone
             changed = True
 
-        sidebar = DuiDslIntentEngine._find_region(document, "sidebar")
-        content = DuiDslIntentEngine._find_region(document, "content")
-        if sidebar and "practice_queue" in sidebar.children:
-            sidebar.children = [child for child in sidebar.children if child != "practice_queue"]
+        for region in document.nodes:
+            if region.type != "layout.region":
+                continue
+            if node_id in region.children and region.props.get("zone") != zone:
+                region.children = [child for child in region.children if child != node_id]
+                changed = True
+
+        target_region = DuiDslIntentEngine._find_region(document, zone)
+        if target_region and node_id not in target_region.children:
+            target_region.children.append(node_id)
             changed = True
-        if content and "practice_queue" not in content.children:
-            content.children.append("practice_queue")
-            changed = True
+
         return changed
+
+    @staticmethod
+    def _remove_node(document: DuiDslDocument, node_id: str) -> bool:
+        if DuiDslIntentEngine._find_node(document, node_id) is None:
+            return False
+
+        changed = False
+        next_nodes: list[DuiDslNode] = []
+        for node in document.nodes:
+            if node.id == node_id:
+                changed = True
+                continue
+
+            if node_id in node.children:
+                node.children = [child for child in node.children if child != node_id]
+                changed = True
+
+            for slot_name, slot_children in node.slots.items():
+                if node_id in slot_children:
+                    node.slots[slot_name] = [child for child in slot_children if child != node_id]
+                    changed = True
+
+            next_nodes.append(node)
+
+        document.nodes = next_nodes
+        return changed
+
+    @staticmethod
+    def _ensure_template_widget(
+        document: DuiDslDocument,
+        *,
+        node_id: str,
+        node_type: str,
+        title: str,
+        zone: str,
+        template_id: str,
+        capability_id: str,
+    ) -> bool:
+        existing = DuiDslIntentEngine._find_node(document, node_id)
+        if existing is not None:
+            return DuiDslIntentEngine._move_node_to_zone(document, node_id=node_id, zone=zone)
+
+        document.nodes.append(
+            DuiDslNode(
+                id=node_id,
+                type=node_type,
+                props={
+                    "title": title,
+                    "zone": zone,
+                    "template_id": template_id,
+                    "capability_id": capability_id,
+                },
+            )
+        )
+        region = DuiDslIntentEngine._find_region(document, zone)
+        if region and node_id not in region.children:
+            region.children.append(node_id)
+        return True

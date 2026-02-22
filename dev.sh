@@ -17,6 +17,35 @@ BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_HOST="${FRONTEND_HOST:-0.0.0.0}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+DUI_LLM_LOG_INPUT="${DUI_LLM_LOG_INPUT:-0}"
+
+usage() {
+  cat <<'EOF'
+Usage: ./dev.sh [options]
+
+Options:
+  --llm-debug-input   Print all LLM input payloads (system/user prompts) to backend console.
+  -h, --help          Show this help.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --llm-debug-input)
+      DUI_LLM_LOG_INPUT=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1"
+      usage
+      exit 1
+      ;;
+  esac
+done
 
 if [[ ! -x "$BACKEND_DIR/.venv/bin/uvicorn" ]]; then
   echo "Backend venv not found: $BACKEND_DIR/.venv/bin/uvicorn"
@@ -51,7 +80,7 @@ trap cleanup INT TERM EXIT
 (
   cd "$BACKEND_DIR"
   source .venv/bin/activate
-  exec uvicorn app.main:app --reload --host "$BACKEND_HOST" --port "$BACKEND_PORT"
+  DUI_LLM_LOG_INPUT="$DUI_LLM_LOG_INPUT" exec uvicorn app.main:app --reload --host "$BACKEND_HOST" --port "$BACKEND_PORT"
 ) &
 backend_pid=$!
 
@@ -63,6 +92,9 @@ frontend_pid=$!
 
 echo "Backend:  http://$BACKEND_HOST:$BACKEND_PORT"
 echo "Frontend: http://localhost:$FRONTEND_PORT"
+if [[ "$DUI_LLM_LOG_INPUT" == "1" ]]; then
+  echo "LLM input debug: enabled (DUI_LLM_LOG_INPUT=1)"
+fi
 echo "Press Ctrl+C to stop both."
 
 wait -n "$backend_pid" "$frontend_pid"

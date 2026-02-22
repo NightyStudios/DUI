@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from uuid import uuid4
 
 import httpx
 
@@ -43,14 +44,34 @@ class LlmGateway:
             "response_format": {"type": "json_object"},
         }
         timeout_seconds = float(os.getenv("DUI_LLM_TIMEOUT_SEC", os.getenv("APIFREE_TIMEOUT_SEC", "60")))
+        debug_enabled = LlmGateway._is_enabled("DUI_LLM_LOG_INPUT")
+        request_id = str(uuid4())
 
         try:
             with httpx.Client(timeout=timeout_seconds) as client:
+                if debug_enabled:
+                    LlmGateway._log_llm_input(
+                        request_id=request_id,
+                        provider=provider,
+                        base_url=base_url,
+                        timeout_seconds=timeout_seconds,
+                        stage="primary",
+                        payload=payload,
+                    )
                 response = client.post(f"{base_url}/chat/completions", headers=headers, json=payload)
                 if response.status_code >= 400:
                     # Many local OpenAI-compatible servers ignore response_format.
                     fallback_payload = dict(payload)
                     fallback_payload.pop("response_format", None)
+                    if debug_enabled:
+                        LlmGateway._log_llm_input(
+                            request_id=request_id,
+                            provider=provider,
+                            base_url=base_url,
+                            timeout_seconds=timeout_seconds,
+                            stage="fallback_without_response_format",
+                            payload=fallback_payload,
+                        )
                     response = client.post(f"{base_url}/chat/completions", headers=headers, json=fallback_payload)
                 response.raise_for_status()
 
@@ -116,3 +137,28 @@ class LlmGateway:
             return parsed if isinstance(parsed, dict) else None
         except json.JSONDecodeError:
             return None
+
+    @staticmethod
+    def _is_enabled(env_name: str) -> bool:
+        return os.getenv(env_name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _log_llm_input(
+        *,
+        request_id: str,
+        provider: str,
+        base_url: str,
+        timeout_seconds: float,
+        stage: str,
+        payload: dict[str, object],
+    ) -> None:
+        event = {
+            "event": "dui.llm.input",
+            "request_id": request_id,
+            "stage": stage,
+            "provider": provider,
+            "base_url": base_url,
+            "timeout_seconds": timeout_seconds,
+            "payload": payload,
+        }
+        print("[DUI_LLM_LOG_INPUT]", json.dumps(event, ensure_ascii=False, indent=2), flush=True)

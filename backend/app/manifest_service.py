@@ -136,6 +136,8 @@ def apply_patch_operations(manifest: UiManifest, operations: list[PatchOperation
                     protected=False,
                     template_id=template.template_id,
                     props={**template.default_props, **(operation.props or {})},
+                    style={},
+                    layout={},
                 )
                 updated.widgets.append(widget)
 
@@ -146,6 +148,7 @@ def apply_patch_operations(manifest: UiManifest, operations: list[PatchOperation
                 zone=operation.zone,
                 child_widget_ids=operation.child_widget_ids or [],
                 layout=operation.section_layout or {},
+                style={},
             )
             _upsert_section(updated, section)
 

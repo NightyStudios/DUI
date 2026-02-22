@@ -16,7 +16,7 @@ from ..dsl_models import (
 )
 from ..dsl_text_parser import DuiLangParseError, parse_dui_lang
 from ..dsl_validator import DuiDslValidator
-from ..models import DuiMode
+from ..models import DEFAULT_SURFACE_ID, DuiMode
 from ..storage import ManifestStore
 from ..telemetry import TELEMETRY
 
@@ -41,7 +41,7 @@ class DslService:
             )
             return DuiDslValidateResponse(result=validation_result, compiled_manifest=preview_manifest)
 
-    def build_parse(self, *, source_text: str, surface_id: str) -> DuiDslParseResponse:
+    def build_parse(self, *, source_text: str, surface_id: str | None = None) -> DuiDslParseResponse:
         with TELEMETRY.track("dui.parse"):
             try:
                 document = parse_dui_lang(source_text)
@@ -53,11 +53,15 @@ class DslService:
             except Exception as error:  # noqa: BLE001
                 raise HTTPException(status_code=400, detail=f"Failed to parse DUI source: {type(error).__name__}") from error
 
-            document.surface.id = surface_id
+            resolved_surface_id = (surface_id or "").strip()
+            if not resolved_surface_id:
+                resolved_surface_id = document.surface.id.strip() if document.surface.id.strip() else DEFAULT_SURFACE_ID
+
+            document.surface.id = resolved_surface_id
             validation_result = DuiDslValidator.validate(document)
             compiled_manifest = None
             if validation_result.valid:
-                current_manifest = self.store.get_current_manifest(surface_id=surface_id)
+                current_manifest = self.store.get_current_manifest(surface_id=resolved_surface_id)
                 compiled_manifest = compile_dsl_document_to_manifest(
                     document,
                     manifest_revision=current_manifest.revision,
@@ -211,12 +215,16 @@ class DslService:
     ) -> list[str]:
         errors: list[str] = []
         if mode == "safe":
-            if current_document.nodes != next_document.nodes:
-                errors.append("safe mode allows only theme updates (nodes cannot change)")
-            if current_document.bindings != next_document.bindings:
-                errors.append("safe mode allows only theme updates (bindings cannot change)")
-            if current_document.actions != next_document.actions:
-                errors.append("safe mode allows only theme updates (actions cannot change)")
-            if current_document.layout_constraints != next_document.layout_constraints:
-                errors.append("safe mode allows only theme updates (layout_constraints cannot change)")
+            guarded_fields = (
+                ("pages", current_document.pages, next_document.pages),
+                ("groups", current_document.groups, next_document.groups),
+                ("widgets", current_document.widgets, next_document.widgets),
+                ("nodes", current_document.nodes, next_document.nodes),
+                ("bindings", current_document.bindings, next_document.bindings),
+                ("actions", current_document.actions, next_document.actions),
+                ("layout_constraints", current_document.layout_constraints, next_document.layout_constraints),
+            )
+            for field_name, current_value, next_value in guarded_fields:
+                if current_value != next_value:
+                    errors.append(f"safe mode allows only theme updates ({field_name} cannot change)")
         return errors

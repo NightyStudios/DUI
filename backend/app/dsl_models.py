@@ -7,7 +7,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from .dsl_catalog import DSL_VERSION
-from .models import Density, ThemeProfile, UiManifest
+from .models import Density, ThemeProfile, UiManifest, Zone
 
 
 DuiIssueSeverity = Literal["error", "warning"]
@@ -64,12 +64,64 @@ class DuiDslAction(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+class DuiDslWidgetLink(BaseModel):
+    page: str | None = None
+    widget: str | None = None
+    route: str | None = None
+    rel: str = "navigate"
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class DuiDslWidget(BaseModel):
+    id: str
+    kind: str = "card"
+    title: str | None = None
+    zone: Zone | None = None
+    group_id: str | None = None
+    capability_id: str | None = None
+    binding_id: str | None = None
+    template_id: str | None = None
+    visible: bool = True
+    props: dict[str, Any] = Field(default_factory=dict)
+    style: dict[str, Any] = Field(default_factory=dict)
+    layout: dict[str, Any] = Field(default_factory=dict)
+    behavior: dict[str, Any] = Field(default_factory=dict)
+    a11y: dict[str, Any] = Field(default_factory=dict)
+    links: list[DuiDslWidgetLink] = Field(default_factory=list)
+
+
+class DuiDslWidgetGroup(BaseModel):
+    id: str
+    title: str
+    page_id: str | None = None
+    zone: Zone = "content"
+    widget_ids: list[str] = Field(default_factory=list)
+    visible: bool = True
+    layout: dict[str, Any] = Field(default_factory=dict)
+    style: dict[str, Any] = Field(default_factory=dict)
+    behavior: dict[str, Any] = Field(default_factory=dict)
+
+
+class DuiDslPage(BaseModel):
+    id: str
+    title: str
+    route: str
+    group_ids: list[str] = Field(default_factory=list)
+    is_default: bool = False
+    layout: dict[str, Any] = Field(default_factory=dict)
+    style: dict[str, Any] = Field(default_factory=dict)
+    behavior: dict[str, Any] = Field(default_factory=dict)
+
+
 class DuiDslDocument(BaseModel):
     dsl_version: str = DSL_VERSION
     surface: DuiDslSurface
     meta: DuiDslMeta = Field(default_factory=DuiDslMeta)
     theme: DuiDslTheme = Field(default_factory=DuiDslTheme)
     state: DuiDslState = Field(default_factory=DuiDslState)
+    pages: list[DuiDslPage] = Field(default_factory=list)
+    groups: list[DuiDslWidgetGroup] = Field(default_factory=list)
+    widgets: list[DuiDslWidget] = Field(default_factory=list)
     nodes: list[DuiDslNode] = Field(default_factory=list)
     bindings: list[DuiDslBinding] = Field(default_factory=list)
     actions: list[DuiDslAction] = Field(default_factory=list)

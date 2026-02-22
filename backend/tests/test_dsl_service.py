@@ -215,6 +215,38 @@ class DuiDslServiceTests(unittest.TestCase):
         accent_values = [operation.tokens.get("accent") for operation in set_theme_ops if operation.tokens]
         self.assertIn("#dc2626", accent_values)
 
+    def test_build_intent_fallback_supports_named_button_color_prompt(self) -> None:
+        with patch.dict(os.environ, {"DUI_LLM_PROVIDER": "disabled"}, clear=False):
+            response = build_intent(
+                user_prompt="Make all buttons chartreuse",
+                current_manifest_id=None,
+                mode="extended",
+                surface_id=DEFAULT_SURFACE_ID,
+                session_id="test-session",
+                turn_id="turn-chartreuse-ui",
+            )
+
+        set_theme_ops = [operation for operation in response.patch_plan.operations if operation.op == "set_theme_tokens"]
+        self.assertTrue(set_theme_ops)
+        accent_values = [operation.tokens.get("accent") for operation in set_theme_ops if operation.tokens]
+        self.assertIn("chartreuse", accent_values)
+
+    def test_build_intent_fallback_supports_hex_button_color_prompt(self) -> None:
+        with patch.dict(os.environ, {"DUI_LLM_PROVIDER": "disabled"}, clear=False):
+            response = build_intent(
+                user_prompt="Сделай все кнопки #ccff00",
+                current_manifest_id=None,
+                mode="extended",
+                surface_id=DEFAULT_SURFACE_ID,
+                session_id="test-session",
+                turn_id="turn-hex-ui",
+            )
+
+        set_theme_ops = [operation for operation in response.patch_plan.operations if operation.op == "set_theme_tokens"]
+        self.assertTrue(set_theme_ops)
+        accent_values = [operation.tokens.get("accent") for operation in set_theme_ops if operation.tokens]
+        self.assertIn("#ccff00", accent_values)
+
     def test_build_dui_intent_fallback_supports_red_buttons_prompt(self) -> None:
         with patch.dict(os.environ, {"DUI_LLM_PROVIDER": "disabled"}, clear=False):
             response = build_dsl_intent(
@@ -224,6 +256,120 @@ class DuiDslServiceTests(unittest.TestCase):
             )
 
         self.assertEqual(response.document.theme.tokens.get("accent"), "#dc2626")
+        self.assertTrue(response.validation_result.valid)
+
+    def test_build_dui_intent_fallback_supports_acid_yellow_buttons_prompt(self) -> None:
+        with patch.dict(os.environ, {"DUI_LLM_PROVIDER": "disabled"}, clear=False):
+            response = build_dsl_intent(
+                user_prompt="Сделай все кнопки кислотно-желтыми",
+                surface_id=DEFAULT_SURFACE_ID,
+                mode="extended",
+            )
+
+        self.assertEqual(response.document.theme.tokens.get("accent"), "#ccff00")
+        accent_container = response.document.theme.tokens.get("accent_container")
+        self.assertIsNotNone(accent_container)
+        self.assertIn("color-mix", accent_container)
+        self.assertTrue(response.validation_result.valid)
+
+    def test_build_dui_intent_fallback_supports_hex_button_color_prompt(self) -> None:
+        with patch.dict(os.environ, {"DUI_LLM_PROVIDER": "disabled"}, clear=False):
+            response = build_dsl_intent(
+                user_prompt="Сделай все кнопки кислотно-желтыми (#ccff00)",
+                surface_id=DEFAULT_SURFACE_ID,
+                mode="extended",
+            )
+
+        self.assertEqual(response.document.theme.tokens.get("accent"), "#ccff00")
+        self.assertTrue(response.validation_result.valid)
+
+    def test_build_dui_intent_fallback_supports_high_contrast_prompt(self) -> None:
+        with patch.dict(os.environ, {"DUI_LLM_PROVIDER": "disabled"}, clear=False):
+            response = build_dsl_intent(
+                user_prompt="Переключи в high-contrast режим для ночной подготовки к экзамену",
+                surface_id=DEFAULT_SURFACE_ID,
+                mode="extended",
+            )
+
+        self.assertEqual(response.document.theme.tokens.get("bg"), "#0b1020")
+        self.assertEqual(response.document.theme.tokens.get("text"), "#f9fafb")
+        self.assertTrue(response.validation_result.valid)
+
+    def test_build_dui_intent_fallback_supports_sidebar_to_top_prompt(self) -> None:
+        with patch.dict(os.environ, {"DUI_LLM_PROVIDER": "disabled"}, clear=False):
+            response = build_dsl_intent(
+                user_prompt="Поменяй лэйаут так, чтобы главный сайдбар был сверху",
+                surface_id=DEFAULT_SURFACE_ID,
+                mode="extended",
+            )
+
+        practice_queue = next(node for node in response.document.nodes if node.id == "practice_queue")
+        header_region = next(
+            node
+            for node in response.document.nodes
+            if node.type == "layout.region" and node.props.get("zone") == "header"
+        )
+        self.assertEqual(practice_queue.props.get("zone"), "header")
+        self.assertIn("practice_queue", header_region.children)
+        self.assertTrue(response.validation_result.valid)
+
+    def test_build_intent_fallback_supports_low_bandwidth_prompt(self) -> None:
+        with patch.dict(os.environ, {"DUI_LLM_PROVIDER": "disabled"}, clear=False):
+            response = build_intent(
+                user_prompt="Режим плохого интернета: убери тяжелые виджеты и оставь легкие карточки",
+                current_manifest_id=None,
+                mode="extended",
+                surface_id=DEFAULT_SURFACE_ID,
+                session_id="test-session",
+                turn_id="turn-low-bandwidth-ui",
+            )
+
+        remove_ops = [
+            operation
+            for operation in response.patch_plan.operations
+            if operation.op == "remove_widget" and operation.widget_id == "mastery_trend"
+        ]
+        self.assertTrue(remove_ops)
+
+    def test_build_dui_intent_fallback_supports_hide_sidebar_prompt(self) -> None:
+        with patch.dict(os.environ, {"DUI_LLM_PROVIDER": "disabled"}, clear=False):
+            response = build_dsl_intent(
+                user_prompt="Убери сайдбар и перераспредели важное в content",
+                surface_id=DEFAULT_SURFACE_ID,
+                mode="extended",
+            )
+
+        practice_queue = next(node for node in response.document.nodes if node.id == "practice_queue")
+        self.assertEqual(practice_queue.props.get("zone"), "content")
+        self.assertEqual(response.document.layout_constraints.get("sidebar_width"), "narrow")
+        self.assertTrue(response.validation_result.valid)
+
+    def test_build_dui_intent_fallback_supports_practice_section_compose_prompt(self) -> None:
+        with patch.dict(os.environ, {"DUI_LLM_PROVIDER": "disabled"}, clear=False):
+            response = build_dsl_intent(
+                user_prompt="Собери секцию практика в content из practice queue и mastery trend",
+                surface_id=DEFAULT_SURFACE_ID,
+                mode="extended",
+            )
+
+        practice_section = next(node for node in response.document.nodes if node.id == "practice_focus")
+        self.assertEqual(practice_section.type, "layout.section")
+        self.assertIn("practice_queue", practice_section.children)
+        self.assertIn("mastery_trend", practice_section.children)
+        self.assertTrue(response.validation_result.valid)
+
+    def test_build_dui_intent_fallback_supports_mentor_review_prompt(self) -> None:
+        with patch.dict(os.environ, {"DUI_LLM_PROVIDER": "disabled"}, clear=False):
+            response = build_dsl_intent(
+                user_prompt="Режим менторского ревью: таблица обучения + активность рядом",
+                surface_id=DEFAULT_SURFACE_ID,
+                mode="extended",
+            )
+
+        review_section = next(node for node in response.document.nodes if node.id == "mentor_review")
+        self.assertEqual(review_section.type, "layout.section")
+        self.assertIn("learning_path", review_section.children)
+        self.assertIn("practice_queue", review_section.children)
         self.assertTrue(response.validation_result.valid)
 
 

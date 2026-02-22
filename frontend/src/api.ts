@@ -1,233 +1,150 @@
 import type {
-  A2UiEnvelope,
   DuiDslCommitResponse,
   DuiDslDocument,
   DuiDslIntentResponse,
   DuiDslParseResponse,
-  DuiDslValidateResponse,
-  DuiMode,
-  IntentResponse,
-  LmsDashboardData,
   LmsLessonData,
+  DuiMode,
+  LmsDashboardData,
   UiManifest,
+  UiSurfaceSummary,
 } from './types';
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
-const DEFAULT_SESSION_ID = 'demo-session';
-const DEFAULT_SURFACE_ID = 'math_lms.dashboard';
-const DEFAULT_CATALOG_VERSION = 'math-lms-catalog-v1';
+export const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, '') ?? 'http://127.0.0.1:8000';
 
-export interface SurfaceContext {
-  sessionId?: string;
-  surfaceId?: string;
-  turnId?: string;
-  mode?: DuiMode;
-}
+export class ApiError extends Error {
+  readonly status: number;
 
-async function parseJsonOrThrow<T>(response: Response, message: string): Promise<T> {
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`${message}: ${response.status} ${errorBody}`);
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
   }
-  return response.json() as Promise<T>;
 }
 
-function randomId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
+interface ErrorLikePayload {
+  detail?: string | { message?: string };
+  message?: string;
+}
+
+function extractErrorMessage(payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object') {
+    return null;
   }
-  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const typed = payload as ErrorLikePayload;
+  if (typeof typed.message === 'string' && typed.message.trim()) {
+    return typed.message;
+  }
+  if (typeof typed.detail === 'string' && typed.detail.trim()) {
+    return typed.detail;
+  }
+  if (typed.detail && typeof typed.detail === 'object' && typeof typed.detail.message === 'string' && typed.detail.message.trim()) {
+    return typed.detail.message;
+  }
+  return null;
 }
 
-function buildEnvelope(
-  messageType: A2UiEnvelope['message_type'],
-  payload: Record<string, unknown>,
-  context?: SurfaceContext,
-): A2UiEnvelope {
-  return {
-    envelope_version: 'a2ui.v0',
-    message_id: randomId(),
-    session_id: context?.sessionId ?? DEFAULT_SESSION_ID,
-    surface_id: context?.surfaceId ?? DEFAULT_SURFACE_ID,
-    turn_id: context?.turnId ?? randomId(),
-    sent_at: new Date().toISOString(),
-    mode: context?.mode ?? 'extended',
-    catalog_version: DEFAULT_CATALOG_VERSION,
-    message_type: messageType,
-    payload,
-  };
-}
-
-async function sendEnvelope(
-  messageType: A2UiEnvelope['message_type'],
-  expectedResponseType: A2UiEnvelope['message_type'],
-  payload: Record<string, unknown>,
-  context?: SurfaceContext,
-): Promise<Record<string, unknown>> {
-  const envelope = buildEnvelope(messageType, payload, context);
-  const response = await fetch(`${API_BASE}/a2ui/envelope`, {
-    method: 'POST',
+async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...init,
     headers: {
-      'Content-Type': 'application/json',
+      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(init?.headers ?? {}),
     },
-    body: JSON.stringify(envelope),
   });
 
-  const parsed = await parseJsonOrThrow<A2UiEnvelope>(response, 'A2UI envelope request failed');
-  if (parsed.message_type !== expectedResponseType) {
-    throw new Error(`Unexpected envelope response type: ${parsed.message_type}`);
+  const text = await response.text();
+  const payload = text ? (JSON.parse(text) as unknown) : null;
+
+  if (!response.ok) {
+    const message = extractErrorMessage(payload) ?? `Ошибка запроса: ${response.status}`;
+    throw new ApiError(message, response.status);
   }
-  return parsed.payload;
+
+  return payload as T;
 }
 
-export async function fetchCurrentManifest(context?: SurfaceContext): Promise<UiManifest> {
-  const payload = await sendEnvelope(
-    'manifest.current.request',
-    'manifest.current.response',
-    {},
-    context,
-  );
-  return payload.manifest as UiManifest;
+export function fetchCurrentManifest(surfaceId: string): Promise<UiManifest> {
+  return requestJson<UiManifest>(`/ui/manifest/current?surface_id=${encodeURIComponent(surfaceId)}`);
 }
 
-export async function fetchRevisions(context?: SurfaceContext): Promise<UiManifest[]> {
-  const payload = await sendEnvelope(
-    'manifest.revisions.request',
-    'manifest.revisions.response',
-    {},
-    context,
-  );
-  return payload.revisions as UiManifest[];
+export function fetchManifestRevisions(surfaceId: string): Promise<UiManifest[]> {
+  return requestJson<UiManifest[]>(`/ui/manifest/revisions?surface_id=${encodeURIComponent(surfaceId)}`);
 }
 
-export async function fetchCurrentDslDocument(context?: SurfaceContext): Promise<DuiDslDocument> {
-  const payload = await sendEnvelope(
-    'dsl.current.request',
-    'dsl.current.response',
-    {},
-    context,
-  );
-  return payload.document as DuiDslDocument;
+export function fetchSurfaces(): Promise<UiSurfaceSummary[]> {
+  return requestJson<UiSurfaceSummary[]>('/ui/surfaces');
 }
 
-export async function fetchDslRevisions(context?: SurfaceContext): Promise<DuiDslDocument[]> {
-  const payload = await sendEnvelope(
-    'dsl.revisions.request',
-    'dsl.revisions.response',
-    {},
-    context,
-  );
-  return payload.documents as DuiDslDocument[];
+export function fetchCurrentDsl(surfaceId: string): Promise<DuiDslDocument> {
+  return requestJson<DuiDslDocument>(`/ui/dsl/current?surface_id=${encodeURIComponent(surfaceId)}`);
 }
 
-export async function fetchDashboardData(): Promise<LmsDashboardData> {
-  const response = await fetch(`${API_BASE}/lms/dashboard`);
-  return parseJsonOrThrow<LmsDashboardData>(response, 'Failed to load dashboard');
+export function fetchDashboardData(): Promise<LmsDashboardData> {
+  return requestJson<LmsDashboardData>('/lms/dashboard');
 }
 
-export async function fetchLesson(lessonId: string): Promise<LmsLessonData> {
-  const response = await fetch(`${API_BASE}/lms/lesson/${lessonId}`);
-  return parseJsonOrThrow<LmsLessonData>(response, 'Failed to load lesson');
+export function fetchLessonData(lessonId: string): Promise<LmsLessonData> {
+  return requestJson<LmsLessonData>(`/lms/lesson/${encodeURIComponent(lessonId)}`);
 }
 
-export async function requestIntent(
-  userPrompt: string,
-  currentManifestId?: string,
-  mode: DuiMode = 'extended',
-  context?: SurfaceContext,
-): Promise<IntentResponse> {
-  const payload = await sendEnvelope(
-    'intent.request',
-    'intent.response',
-    { user_prompt: userPrompt, current_manifest_id: currentManifestId },
-    { ...context, mode },
-  );
-  return payload as unknown as IntentResponse;
+export function generateDslIntent(params: {
+  prompt: string;
+  surfaceId: string;
+  mode: DuiMode;
+  sessionId: string;
+}): Promise<DuiDslIntentResponse> {
+  return requestJson<DuiDslIntentResponse>('/ai/dsl/intent', {
+    method: 'POST',
+    body: JSON.stringify({
+      user_prompt: params.prompt,
+      scope: params.mode,
+      surface_id: params.surfaceId,
+      session_id: params.sessionId,
+    }),
+  });
 }
 
-export async function requestDslIntent(
-  userPrompt: string,
-  mode: DuiMode = 'extended',
-  context?: SurfaceContext,
-): Promise<DuiDslIntentResponse> {
-  const payload = await sendEnvelope(
-    'dsl.intent.request',
-    'dsl.intent.response',
-    { user_prompt: userPrompt },
-    { ...context, mode },
-  );
-  return payload as unknown as DuiDslIntentResponse;
+export function parseDslSource(params: { source: string; surfaceId?: string }): Promise<DuiDslParseResponse> {
+  const payload: Record<string, unknown> = {
+    source_text: params.source,
+  };
+
+  if (typeof params.surfaceId === 'string' && params.surfaceId.trim().length > 0) {
+    payload.surface_id = params.surfaceId;
+  }
+
+  return requestJson<DuiDslParseResponse>('/ui/dsl/parse', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
-export async function parseDslSource(
-  sourceText: string,
-  context?: SurfaceContext,
-): Promise<DuiDslParseResponse> {
-  const payload = await sendEnvelope(
-    'dsl.parse.request',
-    'dsl.parse.response',
-    { source_text: sourceText },
-    context,
-  );
-  return payload as unknown as DuiDslParseResponse;
+export function commitDslDocument(params: {
+  document: DuiDslDocument;
+  surfaceId: string;
+  expectedManifestRevision?: number;
+  expectedDslRevision?: number;
+}): Promise<DuiDslCommitResponse> {
+  return requestJson<DuiDslCommitResponse>('/ui/dsl/commit', {
+    method: 'POST',
+    body: JSON.stringify({
+      document: params.document,
+      surface_id: params.surfaceId,
+      approved_by: 'dui-studio-ui',
+      expected_manifest_revision: params.expectedManifestRevision,
+      expected_dsl_revision: params.expectedDslRevision,
+    }),
+  });
 }
 
-export async function validateDslDocument(
-  document: DuiDslDocument,
-  context?: SurfaceContext,
-): Promise<DuiDslValidateResponse> {
-  const payload = await sendEnvelope(
-    'dsl.validate.request',
-    'dsl.validate.response',
-    { document },
-    context,
-  );
-  return payload as unknown as DuiDslValidateResponse;
-}
-
-export async function commitDslDocument(
-  document: DuiDslDocument,
-  approvedBy = 'poc-user',
-  expectedManifestRevision?: number,
-  expectedDuiRevision?: number,
-  context?: SurfaceContext,
-): Promise<DuiDslCommitResponse> {
-  const payload = await sendEnvelope(
-    'dsl.commit.request',
-    'dsl.commit.response',
-    {
-      document,
-      approved_by: approvedBy,
-      expected_manifest_revision: expectedManifestRevision,
-      expected_dsl_revision: expectedDuiRevision,
-    },
-    context,
-  );
-  return payload as unknown as DuiDslCommitResponse;
-}
-
-export async function commitPatchPlan(
-  patchPlanId: string,
-  expectedBaseRevision?: number,
-  context?: SurfaceContext,
-): Promise<UiManifest> {
-  const payload = await sendEnvelope(
-    'commit.request',
-    'commit.response',
-    { patch_plan_id: patchPlanId, approved_by: 'poc-user', expected_base_revision: expectedBaseRevision },
-    context,
-  );
-  const data = payload as { manifest: UiManifest };
-  return data.manifest;
-}
-
-export async function revertRevision(targetRevision: number, context?: SurfaceContext): Promise<UiManifest> {
-  const payload = await sendEnvelope(
-    'revert.request',
-    'revert.response',
-    { target_revision: targetRevision, approved_by: 'poc-user' },
-    context,
-  );
-  const data = payload as { manifest: UiManifest };
-  return data.manifest;
+export function revertManifest(params: { targetRevision: number; surfaceId: string }): Promise<{ manifest: UiManifest }> {
+  return requestJson<{ manifest: UiManifest }>('/ai/ui/revert', {
+    method: 'POST',
+    body: JSON.stringify({
+      target_revision: params.targetRevision,
+      surface_id: params.surfaceId,
+      approved_by: 'dui-studio-ui',
+    }),
+  });
 }

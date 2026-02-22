@@ -11,9 +11,13 @@ from .dsl_models import (
     DuiDslDocument,
     DuiDslMeta,
     DuiDslNode,
+    DuiDslPage,
     DuiDslState,
     DuiDslSurface,
     DuiDslTheme,
+    DuiDslWidget,
+    DuiDslWidgetGroup,
+    DuiDslWidgetLink,
 )
 
 
@@ -146,6 +150,23 @@ class Parser:
             return token.value
         raise DuiLangParseError("Expected scalar value", token.line, token.column)
 
+    @staticmethod
+    def _parse_bool(value: Any, *, default: bool) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            if value == 1:
+                return True
+            if value == 0:
+                return False
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "yes", "on"}:
+                return True
+            if normalized in {"false", "no", "off"}:
+                return False
+        return default
+
     def parse_value(self) -> Any:
         token = self.current()
         if token.type == "LBRACE":
@@ -259,6 +280,168 @@ class Parser:
             params=payload.get("params", {}) if isinstance(payload.get("params", {}), dict) else {},
         )
 
+    def parse_page(self) -> DuiDslPage:
+        self.expect_ident("page")
+        page_id = self.parse_identifier_like()
+        payload = self.parse_named_block()
+
+        title_raw = payload.get("title")
+        route_raw = payload.get("route")
+        group_ids_raw = payload.get("group_ids", payload.get("groups", []))
+        default_raw = payload.get("is_default", payload.get("default", False))
+        layout_raw = payload.get("layout", {})
+        style_raw = payload.get("style", {})
+        behavior_raw = payload.get("behavior", {})
+
+        group_ids = [str(group_id) for group_id in group_ids_raw] if isinstance(group_ids_raw, list) else []
+
+        return DuiDslPage(
+            id=page_id,
+            title=str(title_raw) if isinstance(title_raw, str) and title_raw.strip() else page_id.replace("_", " ").title(),
+            route=str(route_raw) if isinstance(route_raw, str) and route_raw.strip() else f"/{page_id}",
+            group_ids=group_ids,
+            is_default=self._parse_bool(default_raw, default=False),
+            layout=layout_raw if isinstance(layout_raw, dict) else {},
+            style=style_raw if isinstance(style_raw, dict) else {},
+            behavior=behavior_raw if isinstance(behavior_raw, dict) else {},
+        )
+
+    def parse_group(self) -> DuiDslWidgetGroup:
+        self.expect_ident("group")
+        group_id = self.parse_identifier_like()
+        payload = self.parse_named_block()
+
+        title_raw = payload.get("title")
+        page_id_raw = payload.get("page_id", payload.get("page"))
+        zone_raw = payload.get("zone")
+        widget_ids_raw = payload.get("widget_ids", payload.get("widgets", payload.get("children", [])))
+        visible_raw = payload.get("visible")
+        hidden_raw = payload.get("hidden")
+        layout_raw = payload.get("layout", {})
+        style_raw = payload.get("style", {})
+        behavior_raw = payload.get("behavior", {})
+
+        if isinstance(widget_ids_raw, list):
+            widget_ids = [str(widget_id) for widget_id in widget_ids_raw]
+        else:
+            widget_ids = []
+
+        visible_default = True
+        if hidden_raw is not None and visible_raw is None:
+            visible_default = not self._parse_bool(hidden_raw, default=False)
+
+        return DuiDslWidgetGroup(
+            id=group_id,
+            title=str(title_raw) if isinstance(title_raw, str) and title_raw.strip() else group_id.replace("_", " ").title(),
+            page_id=str(page_id_raw) if isinstance(page_id_raw, str) and page_id_raw.strip() else None,
+            zone=str(zone_raw) if isinstance(zone_raw, str) and zone_raw.strip() else "content",
+            widget_ids=widget_ids,
+            visible=self._parse_bool(visible_raw, default=visible_default),
+            layout=layout_raw if isinstance(layout_raw, dict) else {},
+            style=style_raw if isinstance(style_raw, dict) else {},
+            behavior=behavior_raw if isinstance(behavior_raw, dict) else {},
+        )
+
+    def parse_widget(self) -> DuiDslWidget:
+        self.expect_ident("widget")
+        widget_id = self.parse_identifier_like()
+        widget_kind = "card"
+        if self.current().type == "COLON":
+            self.advance()
+            widget_kind = self.parse_identifier_like()
+        payload = self.parse_named_block()
+
+        title_raw = payload.pop("title", None)
+        zone_raw = payload.pop("zone", None)
+        group_id_raw = payload.pop("group_id", payload.pop("group", None))
+        capability_id_raw = payload.pop("capability_id", None)
+        binding_id_raw = payload.pop("binding_id", None)
+        template_id_raw = payload.pop("template_id", None)
+        visible_raw = payload.pop("visible", None)
+        hidden_raw = payload.pop("hidden", None)
+
+        props_raw = payload.pop("props", {})
+        style_raw = payload.pop("style", {})
+        layout_raw = payload.pop("layout", {})
+        behavior_raw = payload.pop("behavior", {})
+        a11y_raw = payload.pop("a11y", {})
+
+        props: dict[str, Any] = props_raw if isinstance(props_raw, dict) else {}
+        style = style_raw if isinstance(style_raw, dict) else {}
+        layout = layout_raw if isinstance(layout_raw, dict) else {}
+        behavior = behavior_raw if isinstance(behavior_raw, dict) else {}
+        a11y = a11y_raw if isinstance(a11y_raw, dict) else {}
+
+        links: list[DuiDslWidgetLink] = []
+        links_raw = payload.pop("links", None)
+        if isinstance(links_raw, list):
+            for item in links_raw:
+                if isinstance(item, dict):
+                    try:
+                        links.append(DuiDslWidgetLink.model_validate(item))
+                    except Exception:  # noqa: BLE001
+                        continue
+        elif isinstance(links_raw, dict):
+            if any(key in links_raw for key in {"page", "widget", "route", "rel", "payload"}):
+                try:
+                    links.append(DuiDslWidgetLink.model_validate(links_raw))
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                for _, item in links_raw.items():
+                    if isinstance(item, dict):
+                        try:
+                            links.append(DuiDslWidgetLink.model_validate(item))
+                        except Exception:  # noqa: BLE001
+                            continue
+
+        link_page_raw = payload.pop("link_page", None)
+        link_widget_raw = payload.pop("link_widget", None)
+        link_route_raw = payload.pop("link_route", None)
+        if any(isinstance(value, str) and value.strip() for value in (link_page_raw, link_widget_raw, link_route_raw)):
+            links.append(
+                DuiDslWidgetLink(
+                    page=str(link_page_raw) if isinstance(link_page_raw, str) and link_page_raw.strip() else None,
+                    widget=str(link_widget_raw) if isinstance(link_widget_raw, str) and link_widget_raw.strip() else None,
+                    route=str(link_route_raw) if isinstance(link_route_raw, str) and link_route_raw.strip() else None,
+                )
+            )
+
+        if isinstance(capability_id_raw, str) and capability_id_raw.strip():
+            props.setdefault("capability_id", capability_id_raw)
+        if isinstance(template_id_raw, str) and template_id_raw.strip():
+            props.setdefault("template_id", template_id_raw)
+        if isinstance(zone_raw, str) and zone_raw.strip():
+            props.setdefault("zone", zone_raw)
+        if isinstance(title_raw, str) and title_raw.strip():
+            props.setdefault("title", title_raw)
+
+        for key, value in payload.items():
+            if key not in props:
+                props[key] = value
+
+        visible_default = True
+        if hidden_raw is not None and visible_raw is None:
+            visible_default = not self._parse_bool(hidden_raw, default=False)
+
+        return DuiDslWidget(
+            id=widget_id,
+            kind=widget_kind,
+            title=str(title_raw) if isinstance(title_raw, str) and title_raw.strip() else None,
+            zone=str(zone_raw) if isinstance(zone_raw, str) and zone_raw.strip() else None,
+            group_id=str(group_id_raw) if isinstance(group_id_raw, str) and group_id_raw.strip() else None,
+            capability_id=str(capability_id_raw) if isinstance(capability_id_raw, str) and capability_id_raw.strip() else None,
+            binding_id=str(binding_id_raw) if isinstance(binding_id_raw, str) and binding_id_raw.strip() else None,
+            template_id=str(template_id_raw) if isinstance(template_id_raw, str) and template_id_raw.strip() else None,
+            visible=self._parse_bool(visible_raw, default=visible_default),
+            props=props,
+            style=style,
+            layout=layout,
+            behavior=behavior,
+            a11y=a11y,
+            links=links,
+        )
+
     def parse_theme(self) -> DuiDslTheme:
         self.expect_ident("theme")
         payload = self.parse_named_block()
@@ -298,6 +481,9 @@ class Parser:
         meta = DuiDslMeta()
         theme = DuiDslTheme()
         state = DuiDslState()
+        pages: list[DuiDslPage] = []
+        groups: list[DuiDslWidgetGroup] = []
+        widgets: list[DuiDslWidget] = []
         nodes: list[DuiDslNode] = []
         bindings: list[DuiDslBinding] = []
         actions: list[DuiDslAction] = []
@@ -329,6 +515,12 @@ class Parser:
                 payload = self.parse_named_block()
                 if isinstance(payload, dict):
                     layout_constraints = payload
+            elif keyword == "page":
+                pages.append(self.parse_page())
+            elif keyword == "group":
+                groups.append(self.parse_group())
+            elif keyword == "widget":
+                widgets.append(self.parse_widget())
             elif keyword == "node":
                 nodes.append(self.parse_node())
             elif keyword == "binding":
@@ -346,6 +538,9 @@ class Parser:
             meta=meta,
             theme=theme,
             state=state,
+            pages=pages,
+            groups=groups,
+            widgets=widgets,
             nodes=nodes,
             bindings=bindings,
             actions=actions,

@@ -3,8 +3,17 @@ from __future__ import annotations
 import json
 from uuid import uuid4
 
+from .color_intent import infer_button_theme_tokens
 from .llm_gateway import LlmGateway
 from .models import DuiMode, PatchOperation, UiManifest, UiPatchPlan
+from .prompt_rules import (
+    infer_layout_constraint_overrides,
+    infer_theme_token_overrides,
+    normalize_prompt,
+    wants_focus_only,
+    wants_low_bandwidth,
+    wants_sidebar_to_top,
+)
 from .template_catalog import template_ids
 
 
@@ -227,9 +236,10 @@ class IntentEngine:
         manifest: UiManifest,
         mode: DuiMode,
     ) -> tuple[list[PatchOperation], list[str]]:
-        normalized = prompt.lower().strip()
+        normalized = normalize_prompt(prompt)
         operations: list[PatchOperation] = []
         warnings: list[str] = []
+        existing_widget_ids = {widget.id for widget in manifest.widgets}
 
         if any(token in normalized for token in ["миним", "minimal", "минимализм"]):
             operations.append(PatchOperation(op="set_theme_profile", profile="minimal"))
@@ -256,36 +266,107 @@ class IntentEngine:
             operations.append(PatchOperation(op="move_widget", widget_id="learning_path", zone="sidebar"))
 
         if mode in {"extended", "experimental"}:
-            if ("кнопк" in normalized or "button" in normalized) and any(
-                token in normalized for token in ["красн", "red", "красный", "красные"]
-            ):
-                operations.append(
-                    PatchOperation(
-                        op="set_theme_tokens",
-                        tokens={
-                            "accent": "#dc2626",
-                            "accent_container": "#fee2e2",
-                        },
-                    )
-                )
+            theme_tokens = infer_theme_token_overrides(prompt)
+            button_theme_tokens = infer_button_theme_tokens(prompt)
+            if button_theme_tokens:
+                theme_tokens.update(button_theme_tokens)
+            if theme_tokens:
+                operations.append(PatchOperation(op="set_theme_tokens", tokens=theme_tokens))
+
+            layout_constraints = infer_layout_constraint_overrides(prompt)
+            if layout_constraints:
+                operations.append(PatchOperation(op="set_layout_constraints", layout_constraints=layout_constraints))
+
+            if wants_sidebar_to_top(prompt):
+                operations.append(PatchOperation(op="move_widget", widget_id="practice_queue", zone="header"))
+
+            if wants_focus_only(prompt):
+                operations.append(PatchOperation(op="move_widget", widget_id="practice_queue", zone="content"))
+
+            if wants_low_bandwidth(prompt):
+                operations.append(PatchOperation(op="remove_widget", widget_id="mastery_trend"))
 
             if any(token in normalized for token in ["добавь слаб", "weak topic", "weak topics"]):
+                widget_id = IntentEngine._next_available_widget_id(existing_widget_ids, "weak_topics_list_1")
+                existing_widget_ids.add(widget_id)
                 operations.append(
                     PatchOperation(
                         op="add_widget_from_template",
                         template_id="weak_topics_list",
-                        widget_id="weak_topics_list_1",
+                        widget_id=widget_id,
                         zone="sidebar",
                         title="Weak Topics",
                     )
                 )
 
             if any(token in normalized for token in ["быстрые действия", "quick actions"]):
+                widget_id = IntentEngine._next_available_widget_id(existing_widget_ids, "quick_actions_1")
+                existing_widget_ids.add(widget_id)
                 operations.append(
                     PatchOperation(
                         op="add_widget_from_template",
                         template_id="quick_actions",
-                        widget_id="quick_actions_1",
+                        widget_id=widget_id,
+                        zone="header",
+                    )
+                )
+
+            if any(token in normalized for token in ["формул", "formula"]):
+                formula_widget_id = IntentEngine._next_available_widget_id(existing_widget_ids, "formula_cheatsheet_1")
+                existing_widget_ids.add(formula_widget_id)
+                operations.append(
+                    PatchOperation(
+                        op="add_widget_from_template",
+                        template_id="formula_cheatsheet",
+                        widget_id=formula_widget_id,
+                        zone="content",
+                    )
+                )
+
+            if any(token in normalized for token in ["next lesson", "следующ", "next step"]):
+                lesson_widget_id = IntentEngine._next_available_widget_id(existing_widget_ids, "next_lesson_card_1")
+                existing_widget_ids.add(lesson_widget_id)
+                operations.append(
+                    PatchOperation(
+                        op="add_widget_from_template",
+                        template_id="next_lesson_card",
+                        widget_id=lesson_widget_id,
+                        zone="content",
+                    )
+                )
+
+            if any(token in normalized for token in ["дедлайн", "deadline", "assignment calendar"]):
+                assignment_widget_id = IntentEngine._next_available_widget_id(existing_widget_ids, "assignment_calendar_1")
+                existing_widget_ids.add(assignment_widget_id)
+                operations.append(
+                    PatchOperation(
+                        op="add_widget_from_template",
+                        template_id="assignment_calendar",
+                        widget_id=assignment_widget_id,
+                        zone="content",
+                    )
+                )
+
+            if any(token in normalized for token in ["focus timer", "таймер", "pomodoro"]):
+                focus_widget_id = IntentEngine._next_available_widget_id(existing_widget_ids, "focus_timer_1")
+                existing_widget_ids.add(focus_widget_id)
+                operations.append(
+                    PatchOperation(
+                        op="add_widget_from_template",
+                        template_id="focus_timer",
+                        widget_id=focus_widget_id,
+                        zone="content",
+                    )
+                )
+
+            if any(token in normalized for token in ["streak", "геймифик", "gamif"]):
+                streak_widget_id = IntentEngine._next_available_widget_id(existing_widget_ids, "study_streak_panel_1")
+                existing_widget_ids.add(streak_widget_id)
+                operations.append(
+                    PatchOperation(
+                        op="add_widget_from_template",
+                        template_id="study_streak_panel",
+                        widget_id=streak_widget_id,
                         zone="header",
                     )
                 )
@@ -304,7 +385,22 @@ class IntentEngine:
 
         if not operations:
             warnings.append(
-                "Intent parser fallback did not detect commands. Try: minimal, compact, hide sidebar, weak topics, practice section."
+                "Intent parser fallback did not detect commands. Try: minimal, compact, make buttons #ccff00, hide sidebar, weak topics, practice section."
             )
 
         return operations, warnings
+
+    @staticmethod
+    def _next_available_widget_id(existing_widget_ids: set[str], preferred_id: str) -> str:
+        if preferred_id not in existing_widget_ids:
+            return preferred_id
+
+        stem = preferred_id
+        if "_" in preferred_id:
+            prefix, maybe_suffix = preferred_id.rsplit("_", 1)
+            if maybe_suffix.isdigit():
+                stem = prefix
+        suffix = 2
+        while f"{stem}_{suffix}" in existing_widget_ids:
+            suffix += 1
+        return f"{stem}_{suffix}"

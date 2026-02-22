@@ -45,6 +45,52 @@ surface math_lms.dashboard {
 }
 """
 
+SAMPLE_WIDGET_DSL = """
+surface math_lms.dashboard {
+  surface_meta { title: "Math Dashboard", route: "/dashboard" }
+  meta { document_id: "doc_widget_sample", revision: 2, created_by: "seed" }
+  theme { profile: default density: comfortable }
+  layout_constraints { max_columns: 2, sidebar_width: normal }
+
+  page dashboard_page {
+    title: "Dashboard"
+    route: "/dashboard"
+    default: true
+    groups: [header_group, content_group]
+  }
+
+  group header_group {
+    title: "Header Group"
+    page: dashboard_page
+    zone: header
+    widgets: [course_progress]
+  }
+
+  group content_group {
+    title: "Content Group"
+    page: dashboard_page
+    zone: content
+    widgets: [learning_path]
+  }
+
+  widget course_progress: kpi {
+    title: "Course Progress"
+    group: header_group
+    capability_id: math.progress_overview
+    style { background: "#0f172a" }
+    layout { min_height: 240 }
+  }
+
+  widget learning_path: table {
+    title: "Learning Path"
+    group: content_group
+    capability_id: math.learning_path
+    visible: true
+    links [ { page: dashboard_page, rel: open } ]
+  }
+}
+"""
+
 
 class DuiDslParserTests(unittest.TestCase):
     def test_parse_valid_dsl_text(self) -> None:
@@ -62,7 +108,17 @@ class DuiDslParserTests(unittest.TestCase):
         with self.assertRaises(DuiLangParseError):
             parse_dui_lang(bad_text)
 
+    def test_parse_widget_graph_dsl_text(self) -> None:
+        document = parse_dui_lang(SAMPLE_WIDGET_DSL)
+        self.assertEqual(document.surface.id, "math_lms.dashboard")
+        self.assertEqual(len(document.pages), 1)
+        self.assertEqual(len(document.groups), 2)
+        self.assertEqual(len(document.widgets), 2)
+        self.assertEqual(document.pages[0].id, "dashboard_page")
+        self.assertTrue(document.pages[0].is_default)
+        self.assertEqual(document.widgets[0].id, "course_progress")
+        self.assertEqual(document.widgets[0].capability_id, "math.progress_overview")
+
 
 if __name__ == "__main__":
     unittest.main()
-
