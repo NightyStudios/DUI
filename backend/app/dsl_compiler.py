@@ -5,6 +5,7 @@ from typing import Any
 from uuid import uuid4
 
 from .dsl_catalog import WIDGET_COMPILATION_MAP, ZONE_ALLOWLIST
+from .dsl_legacy_adapter import canonicalize_document
 from .dsl_models import DuiDslDocument, DuiDslWidget, DuiDslWidgetGroup
 from .manifest_service import tokens_for
 from .models import SectionConfig, ThemeConfig, UiManifest, WidgetConfig
@@ -62,27 +63,6 @@ def _parse_bool(value: object) -> bool | None:
         if value == 0:
             return False
     return None
-
-
-def _contains_sidebar_collapsed_ref(value: object) -> bool:
-    if isinstance(value, str):
-        normalized = value.strip().replace("_", "").lower()
-        return "sidebarcollapsed" in normalized
-    if isinstance(value, dict):
-        return any(_contains_sidebar_collapsed_ref(item) for item in value.items())
-    if isinstance(value, tuple):
-        return any(_contains_sidebar_collapsed_ref(item) for item in value)
-    if isinstance(value, list):
-        return any(_contains_sidebar_collapsed_ref(item) for item in value)
-    return False
-
-
-def _extract_sidebar_collapsed_initial(locals_state: dict[str, Any], fallback: bool = False) -> bool:
-    for key in ("sidebarCollapsed", "sidebar_collapsed"):
-        value = _parse_bool(locals_state.get(key))
-        if value is not None:
-            return value
-    return fallback
 
 
 def _resolve_widget_kind(raw_kind: str | None, capability_id: str | None, template_id: str | None) -> str:
@@ -149,42 +129,6 @@ def _build_widget_props(widget: DuiDslWidget, *, title: str, zone: str, capabili
     return props
 
 
-def _derive_sidebar_layout_constraints_from_nodes(document: DuiDslDocument) -> dict[str, bool]:
-    sidebar_region = next(
-        (
-            node
-            for node in document.nodes
-            if node.type == "layout.region" and _normalize_zone(node.props.get("zone")) == "sidebar"
-        ),
-        None,
-    )
-    if sidebar_region is None:
-        return {}
-
-    prop_collapsible = _parse_bool(sidebar_region.props.get("collapsible"))
-    if prop_collapsible is False:
-        return {}
-
-    has_toggle_action = any(
-        action.type == "state.toggle" and _contains_sidebar_collapsed_ref(action.params)
-        for action in document.actions
-    )
-    has_visibility_condition = _contains_sidebar_collapsed_ref(sidebar_region.visible_when)
-    is_collapsible = prop_collapsible is True or has_toggle_action or has_visibility_condition
-    if not is_collapsible:
-        return {}
-
-    collapsed_from_props = _parse_bool(sidebar_region.props.get("defaultCollapsed"))
-    collapsed_initial = _extract_sidebar_collapsed_initial(
-        document.state.locals,
-        fallback=collapsed_from_props if collapsed_from_props is not None else False,
-    )
-    return {
-        "sidebar_collapsible": True,
-        "sidebar_collapsed_initial": collapsed_initial,
-    }
-
-
 def _derive_sidebar_layout_constraints_from_groups(groups: list[DuiDslWidgetGroup]) -> dict[str, bool]:
     sidebar_groups = [group for group in groups if _normalize_zone(group.zone) == "sidebar" and group.visible]
     if not sidebar_groups:
@@ -210,88 +154,6 @@ def _derive_sidebar_layout_constraints_from_groups(groups: list[DuiDslWidgetGrou
         "sidebar_collapsible": True,
         "sidebar_collapsed_initial": collapsed_initial,
     }
-
-
-def _apply_legacy_node_overlays(
-    document: DuiDslDocument,
-    *,
-    widgets: list[WidgetConfig],
-    sections: list[SectionConfig],
-) -> tuple[list[WidgetConfig], list[SectionConfig]]:
-    if not document.nodes:
-        return widgets, sections
-
-    node_widget_map = {node.id: node for node in document.nodes if node.type in WIDGET_COMPILATION_MAP}
-    node_section_map = {node.id: node for node in document.nodes if node.type == "layout.section"}
-    widget_ids = {widget.id for widget in widgets}
-
-    merged_widgets: list[WidgetConfig] = []
-    for widget in widgets:
-        node = node_widget_map.get(widget.id)
-        if node is None:
-            merged_widgets.append(widget)
-            continue
-
-        zone = _normalize_zone(node.props.get("zone")) if node.props.get("zone") is not None else widget.zone
-        title = str(node.props.get("title")) if node.props.get("title") else widget.title
-        capability_id = str(node.props.get("capability_id")) if node.props.get("capability_id") else widget.capability_id
-        template_id_raw = node.props.get("template_id")
-        template_id = template_id_raw if isinstance(template_id_raw, str) and template_id_raw.strip() else widget.template_id
-        protected = bool(node.props.get("protected", widget.protected))
-
-        merged_widgets.append(
-            WidgetConfig(
-                id=widget.id,
-                title=title,
-                kind=widget.kind,
-                zone=zone,
-                capability_id=capability_id,
-                protected=protected,
-                template_id=template_id,
-                props={**widget.props, **dict(node.props)},
-                style={**widget.style, **(dict(node.style) if isinstance(node.style, dict) else {})},
-                layout={**widget.layout, **(dict(node.layout) if isinstance(node.layout, dict) else {})},
-            )
-        )
-
-    merged_sections: list[SectionConfig] = []
-    section_ids = {section.id for section in sections}
-    for section in sections:
-        node = node_section_map.get(section.id)
-        if node is None:
-            merged_sections.append(section)
-            continue
-
-        zone = _normalize_zone(node.props.get("zone")) if node.props.get("zone") is not None else section.zone
-        title = str(node.props.get("title")) if node.props.get("title") else section.title
-        child_widget_ids = [child_id for child_id in node.children if child_id in widget_ids] or section.child_widget_ids
-        merged_sections.append(
-            SectionConfig(
-                id=section.id,
-                title=title,
-                zone=zone,
-                child_widget_ids=child_widget_ids,
-                layout={**section.layout, **(dict(node.layout) if isinstance(node.layout, dict) else {})},
-                style={**section.style, **(dict(node.style) if isinstance(node.style, dict) else {})},
-            )
-        )
-
-    for node_id, node in node_section_map.items():
-        if node_id in section_ids:
-            continue
-        child_widget_ids = [child_id for child_id in node.children if child_id in widget_ids]
-        merged_sections.append(
-            SectionConfig(
-                id=node.id,
-                title=str(node.props.get("title") or _title_from_id(node.id)),
-                zone=_normalize_zone(node.props.get("zone")),
-                child_widget_ids=child_widget_ids,
-                layout=dict(node.layout) if isinstance(node.layout, dict) else {},
-                style=dict(node.style) if isinstance(node.style, dict) else {},
-            )
-        )
-
-    return merged_widgets, merged_sections
 
 
 def _active_page(document: DuiDslDocument) -> tuple[str | None, set[str] | None]:
@@ -426,105 +288,27 @@ def _compile_from_widget_graph(document: DuiDslDocument) -> tuple[list[WidgetCon
     return widgets, sections, metadata, derived_layout_constraints
 
 
-def _compile_from_legacy_nodes(document: DuiDslDocument) -> tuple[list[WidgetConfig], list[SectionConfig], dict[str, str], dict[str, bool]]:
-    widget_ids: set[str] = set()
-    widgets: list[WidgetConfig] = []
-
-    for node in document.nodes:
-        mapping = WIDGET_COMPILATION_MAP.get(node.type)
-        if not mapping:
-            continue
-
-        zone = _normalize_zone(node.props.get("zone"))
-        widget_id = node.id
-        widget_ids.add(widget_id)
-
-        title = str(node.props.get("title") or _title_from_id(node.id))
-        capability_id = str(node.props.get("capability_id") or mapping["capability_id"])
-        template_id = node.props.get("template_id")
-        protected = bool(node.props.get("protected", False))
-
-        widgets.append(
-            WidgetConfig(
-                id=widget_id,
-                title=title,
-                kind=mapping["kind"],
-                zone=zone,
-                capability_id=capability_id,
-                protected=protected,
-                template_id=template_id if isinstance(template_id, str) else None,
-                props=dict(node.props),
-                style=dict(node.style) if isinstance(node.style, dict) else {},
-                layout=dict(node.layout) if isinstance(node.layout, dict) else {},
-            )
-        )
-
-    sections: list[SectionConfig] = []
-    for node in document.nodes:
-        if node.type != "layout.section":
-            continue
-        zone = _normalize_zone(node.props.get("zone"))
-        title = str(node.props.get("title") or _title_from_id(node.id))
-        layout = node.layout if isinstance(node.layout, dict) else {}
-        child_widget_ids = [child_id for child_id in node.children if child_id in widget_ids]
-
-        sections.append(
-            SectionConfig(
-                id=node.id,
-                title=title,
-                zone=zone,
-                child_widget_ids=child_widget_ids,
-                layout=layout,
-                style=dict(node.style) if isinstance(node.style, dict) else {},
-            )
-        )
-
-    if not sections and widgets:
-        for zone in ("header", "content", "sidebar", "footer"):
-            children = [widget.id for widget in widgets if widget.zone == zone]
-            if children:
-                sections.append(
-                    SectionConfig(
-                        id=f"auto_{zone}",
-                        title=f"{zone.capitalize()} Section",
-                        zone=zone,
-                        child_widget_ids=children,
-                        layout={"columns": 1},
-                        style={},
-                    )
-                )
-
-    metadata = {"dsl_model": "legacy-node-v1"}
-    derived_layout_constraints = _derive_sidebar_layout_constraints_from_nodes(document)
-    return widgets, sections, metadata, derived_layout_constraints
-
-
 def compile_dsl_document_to_manifest(
     document: DuiDslDocument,
     *,
     manifest_revision: int,
     manifest_id: str | None = None,
 ) -> UiManifest:
-    if document.widgets:
-        widgets, sections, extra_metadata, derived_layout_constraints = _compile_from_widget_graph(document)
-        widgets, sections = _apply_legacy_node_overlays(document, widgets=widgets, sections=sections)
-        for key, value in _derive_sidebar_layout_constraints_from_nodes(document).items():
-            derived_layout_constraints.setdefault(key, value)
-    else:
-        widgets, sections, extra_metadata, derived_layout_constraints = _compile_from_legacy_nodes(document)
+    canonical_document = canonicalize_document(document)
+    widgets, sections, extra_metadata, derived_layout_constraints = _compile_from_widget_graph(canonical_document)
 
-    tokens = tokens_for(document.theme.profile, document.theme.density)
-    for key, value in document.theme.tokens.items():
+    tokens = tokens_for(canonical_document.theme.profile, canonical_document.theme.density)
+    for key, value in canonical_document.theme.tokens.items():
         tokens[key] = value
 
     metadata = {
-        "surface_id": document.surface.id,
-        "dsl_document_id": document.meta.document_id,
-        "dsl_version": document.dsl_version,
-        "created_by": document.meta.created_by,
+        "surface_id": canonical_document.surface.id,
+        "dsl_document_id": canonical_document.meta.document_id,
+        "dsl_version": canonical_document.dsl_version,
+        "created_by": canonical_document.meta.created_by,
         **extra_metadata,
     }
-    layout_constraints = {**DEFAULT_LAYOUT_CONSTRAINTS, **document.layout_constraints}
+    layout_constraints = {**DEFAULT_LAYOUT_CONSTRAINTS, **canonical_document.layout_constraints}
     for key, value in derived_layout_constraints.items():
         layout_constraints.setdefault(key, value)
 
@@ -533,8 +317,8 @@ def compile_dsl_document_to_manifest(
         revision=manifest_revision,
         created_at=datetime.now(timezone.utc),
         theme=ThemeConfig(
-            profile=document.theme.profile,
-            density=document.theme.density,
+            profile=canonical_document.theme.profile,
+            density=canonical_document.theme.density,
             tokens=tokens,
         ),
         widgets=widgets,

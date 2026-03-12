@@ -256,10 +256,11 @@ class IntentEngine:
         if any(token in normalized for token in ["простор", "comfortable", "воздух"]):
             operations.append(PatchOperation(op="set_density", density="comfortable"))
 
-        if any(token in normalized for token in ["убери сайдбар", "hide sidebar", "без сайдбара"]):
-            sidebar_widget_ids = [widget.id for widget in manifest.widgets if widget.zone == "sidebar" and not widget.protected]
+        hide_sidebar_requested = any(token in normalized for token in ["убери сайдбар", "hide sidebar", "без сайдбара"])
+        if hide_sidebar_requested:
+            sidebar_widget_ids = [widget.id for widget in manifest.widgets if widget.zone == "sidebar"]
             for widget_id in sidebar_widget_ids:
-                operations.append(PatchOperation(op="remove_widget", widget_id=widget_id))
+                operations.append(PatchOperation(op="move_widget", widget_id=widget_id, zone="content"))
 
         if any(token in normalized for token in ["фокус на практик", "practice focus", "больше практик"]):
             operations.append(PatchOperation(op="move_widget", widget_id="practice_queue", zone="content"))
@@ -277,6 +278,11 @@ class IntentEngine:
             if layout_constraints:
                 operations.append(PatchOperation(op="set_layout_constraints", layout_constraints=layout_constraints))
 
+            if hide_sidebar_requested:
+                operations.append(
+                    PatchOperation(op="set_layout_constraints", layout_constraints={"sidebar_width": "narrow"})
+                )
+
             if wants_sidebar_to_top(prompt):
                 operations.append(PatchOperation(op="move_widget", widget_id="practice_queue", zone="header"))
 
@@ -286,7 +292,7 @@ class IntentEngine:
             if wants_low_bandwidth(prompt):
                 operations.append(PatchOperation(op="remove_widget", widget_id="mastery_trend"))
 
-            if any(token in normalized for token in ["добавь слаб", "weak topic", "weak topics"]):
+            if any(token in normalized for token in ["добавь слаб", "weak topic", "weak topics", "слабые темы"]):
                 widget_id = IntentEngine._next_available_widget_id(existing_widget_ids, "weak_topics_list_1")
                 existing_widget_ids.add(widget_id)
                 operations.append(
@@ -371,7 +377,7 @@ class IntentEngine:
                     )
                 )
 
-            if any(token in normalized for token in ["секция практика", "practice section"]):
+            if any(token in normalized for token in ["секция практика", "секцию практика", "practice section"]):
                 operations.append(
                     PatchOperation(
                         op="compose_section",
@@ -379,6 +385,19 @@ class IntentEngine:
                         section_title="Practice Focus",
                         zone="content",
                         child_widget_ids=["practice_queue", "mastery_trend"],
+                        section_layout={"columns": 2},
+                    )
+                )
+
+            if any(token in normalized for token in ["mentor review", "менторск", "менторского ревью"]):
+                operations.append(PatchOperation(op="move_widget", widget_id="practice_queue", zone="content"))
+                operations.append(
+                    PatchOperation(
+                        op="compose_section",
+                        section_id="mentor_review",
+                        section_title="Mentor Review",
+                        zone="content",
+                        child_widget_ids=["learning_path", "practice_queue"],
                         section_layout={"columns": 2},
                     )
                 )

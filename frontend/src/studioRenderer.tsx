@@ -7,6 +7,7 @@ import {
   SECTION_TITLE_LABELS,
   ZONE_LABELS,
 } from './studioConfig';
+import { MathFormulaList } from './mathFormulaList';
 import type {
   LmsDashboardData,
   LmsLessonData,
@@ -291,13 +292,7 @@ function renderWidgetBody(widget: WidgetConfig, dashboard: LmsDashboardData, onO
   }
 
   if (capability === 'math.formulas') {
-    return (
-      <ul className="plain-list">
-        {dashboard.formulas.map((formula) => (
-          <li key={formula}>{formula}</li>
-        ))}
-      </ul>
-    );
+    return <MathFormulaList formulas={dashboard.formulas} />;
   }
 
   if (capability === 'math.assignments') {
@@ -372,6 +367,13 @@ function SectionBlock(props: {
   const { section, widgetsById, dashboard, onOpenLesson } = props;
   const style = asRecord(section.style);
   const layout = asRecord(section.layout);
+  const resolvedWidgets = section.child_widget_ids
+    .map((widgetId) => widgetsById.get(widgetId))
+    .filter((widget): widget is WidgetConfig => widget !== undefined);
+
+  if (resolvedWidgets.length === 0) {
+    return <></>;
+  }
 
   const columns = Math.max(1, Math.min(4, Math.floor(readNumber(layout, ['columns']) ?? 1)));
   const sectionStyle: CSSProperties = {
@@ -390,13 +392,9 @@ function SectionBlock(props: {
         <h3>{getSectionDisplayTitle(section)}</h3>
       </header>
       <div className="section-grid" style={gridStyle}>
-        {section.child_widget_ids.map((widgetId) => {
-          const widget = widgetsById.get(widgetId);
-          if (!widget) {
-            return null;
-          }
-          return <WidgetCard key={widget.id} widget={widget} dashboard={dashboard} onOpenLesson={onOpenLesson} />;
-        })}
+        {resolvedWidgets.map((widget) => (
+          <WidgetCard key={widget.id} widget={widget} dashboard={dashboard} onOpenLesson={onOpenLesson} />
+        ))}
       </div>
     </article>
   );
@@ -411,6 +409,13 @@ function ZoneBlock(props: {
   onOpenLesson: (lessonId: string) => void;
 }): JSX.Element {
   const { zone, sections, orphanWidgets, widgetsById, dashboard, onOpenLesson } = props;
+  const visibleSections = sections.filter((section) =>
+    section.child_widget_ids.some((widgetId) => widgetsById.has(widgetId)),
+  );
+
+  if (visibleSections.length === 0 && orphanWidgets.length === 0) {
+    return <></>;
+  }
 
   return (
     <section className={`zone zone-${zone}`}>
@@ -418,7 +423,7 @@ function ZoneBlock(props: {
         <h2>{ZONE_LABELS[zone]}</h2>
       </header>
 
-      {sections.map((section) => (
+      {visibleSections.map((section) => (
         <SectionBlock key={section.id} section={section} widgetsById={widgetsById} dashboard={dashboard} onOpenLesson={onOpenLesson} />
       ))}
 
@@ -429,8 +434,6 @@ function ZoneBlock(props: {
           ))}
         </div>
       ) : null}
-
-      {sections.length === 0 && orphanWidgets.length === 0 ? <p className="zone-empty">Нет виджетов</p> : null}
     </section>
   );
 }
@@ -536,11 +539,12 @@ export function ManifestCanvas(props: {
 export function LessonPage(props: {
   lesson: LmsLessonData | null;
   manifest: UiManifest | null;
+  dashboard: LmsDashboardData;
   loading: boolean;
   onBack: () => void;
   onOpenLesson: (lessonId: string) => void;
 }): JSX.Element {
-  const { lesson, manifest, loading, onBack, onOpenLesson } = props;
+  const { lesson, manifest, dashboard, loading, onBack, onOpenLesson } = props;
 
   const lessonCapabilities = useMemo(() => {
     if (!manifest || manifest.widgets.length === 0) {
@@ -558,6 +562,11 @@ export function LessonPage(props: {
   const showExercises = !lessonCapabilities || lessonCapabilities.has('math.lesson_exercises');
   const showReferenceCards = showObjectives || showTheory;
   const showAnyCards = showObjectives || showTheory || showExercises;
+  const hasManifestDrivenLessonContent =
+    !!manifest &&
+    manifest.widgets.some(
+      (widget) => typeof widget.capability_id === 'string' && widget.capability_id.trim().length > 0 && !widget.capability_id.startsWith('math.lesson_'),
+    );
 
   if (loading) {
     return (
@@ -596,7 +605,9 @@ export function LessonPage(props: {
         </button>
       </header>
 
-      {showAnyCards ? (
+      {hasManifestDrivenLessonContent && manifest ? (
+        <ManifestCanvas manifest={manifest} dashboard={dashboard} sidebarCollapsed={false} onOpenLesson={onOpenLesson} />
+      ) : showAnyCards ? (
         <div className={`lesson-grid ${showReferenceCards ? '' : 'lesson-grid-single'}`}>
           {showObjectives ? (
             <article className="lesson-card">

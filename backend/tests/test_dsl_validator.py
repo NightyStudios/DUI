@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import unittest
 
-from backend.app.dsl_models import DuiDslNode
 from backend.app.dsl_seed import build_seed_document_for_surface
 from backend.app.dsl_text_parser import parse_dui_lang
 from backend.app.dsl_validator import DuiDslValidator
@@ -15,29 +14,21 @@ class DuiDslValidatorTests(unittest.TestCase):
         result = DuiDslValidator.validate(document)
         self.assertTrue(result.valid, msg=f"Unexpected errors: {[issue.message for issue in result.errors]}")
 
-    def test_unknown_node_type_is_rejected(self) -> None:
+    def test_duplicate_widget_id_is_rejected(self) -> None:
         document = build_seed_document_for_surface(DEFAULT_SURFACE_ID)
-        document.nodes.append(DuiDslNode(id="bad_node", type="evil.custom_component"))
+        document.widgets.append(document.widgets[0].model_copy(deep=True))
         result = DuiDslValidator.validate(document)
         self.assertFalse(result.valid)
-        self.assertTrue(any(issue.code == "node.type_unknown" for issue in result.errors))
+        self.assertTrue(any(issue.code == "widget.id_duplicate" for issue in result.errors))
 
-    def test_duplicate_node_id_is_rejected(self) -> None:
+    def test_unknown_group_widget_reference_is_rejected(self) -> None:
         document = build_seed_document_for_surface(DEFAULT_SURFACE_ID)
-        first = document.nodes[0]
-        document.nodes.append(DuiDslNode(id=first.id, type="layout.container"))
+        document.groups[0].widget_ids.append("ghost_widget")
         result = DuiDslValidator.validate(document)
         self.assertFalse(result.valid)
-        self.assertTrue(any(issue.code == "node.id_duplicate" for issue in result.errors))
+        self.assertTrue(any(issue.code == "group.widget_unknown" for issue in result.errors))
 
-    def test_unknown_child_reference_is_rejected(self) -> None:
-        document = build_seed_document_for_surface(DEFAULT_SURFACE_ID)
-        document.nodes[0].children.append("ghost_node")
-        result = DuiDslValidator.validate(document)
-        self.assertFalse(result.valid)
-        self.assertTrue(any(issue.code == "node.child_unknown" for issue in result.errors))
-
-    def test_widget_graph_without_nodes_is_valid(self) -> None:
+    def test_widget_graph_without_legacy_nodes_is_valid(self) -> None:
         source_text = """
         surface math_lms.dashboard {
           page dashboard_page { title: "Dashboard", route: "/dashboard", default: true, groups: [main_group] }
@@ -50,7 +41,6 @@ class DuiDslValidatorTests(unittest.TestCase):
         }
         """
         document = parse_dui_lang(source_text)
-        document.nodes = []
         result = DuiDslValidator.validate(document)
         self.assertTrue(result.valid, msg=f"Unexpected errors: {[issue.message for issue in result.errors]}")
 
@@ -67,7 +57,6 @@ class DuiDslValidatorTests(unittest.TestCase):
         }
         """
         document = parse_dui_lang(source_text)
-        document.nodes = []
         result = DuiDslValidator.validate(document)
         self.assertFalse(result.valid)
         self.assertTrue(any(issue.code == "widget.link_page_unknown" for issue in result.errors))

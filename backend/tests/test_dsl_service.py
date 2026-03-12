@@ -14,9 +14,11 @@ from backend.app.main import (
     build_dsl_commit,
     build_dsl_intent,
     build_dsl_parse,
+    build_dsl_transform,
     build_dsl_validate,
     build_intent,
 )
+from backend.app.dsl_text_parser import parse_dui_lang
 from backend.app.models import A2UiEnvelope, DEFAULT_SURFACE_ID
 
 
@@ -82,6 +84,33 @@ class DuiDslServiceTests(unittest.TestCase):
         self.assertEqual(response.document.surface.id, DEFAULT_SURFACE_ID)
         self.assertIsNotNone(response.compiled_manifest)
 
+    def test_build_dsl_transform_returns_updated_source_text(self) -> None:
+        source_text = """
+        surface math_lms.dashboard {
+          surface_meta { title: "Math Dashboard", route: "/dashboard" }
+          page dashboard_page { title: "Dashboard", route: "/dashboard", default: true, groups: [main_group] }
+          group main_group { title: "Main", page: dashboard_page, zone: content, widgets: [course_progress] }
+          widget course_progress: kpi {
+            title: "Course Progress"
+            group: main_group
+            capability_id: math.progress_overview
+          }
+        }
+        """
+        response = build_dsl_transform(
+            source_text=source_text,
+            user_prompt="Сделай стиль минимализм и compact",
+            surface_id=DEFAULT_SURFACE_ID,
+            mode="safe",
+        )
+
+        reparsed = parse_dui_lang(response.source_text)
+        self.assertEqual(response.document.theme.profile, "minimal")
+        self.assertEqual(response.document.theme.density, "compact")
+        self.assertEqual(reparsed.theme.profile, "minimal")
+        self.assertEqual(reparsed.theme.density, "compact")
+        self.assertTrue(response.validation_result.valid)
+
     def test_a2ui_envelope_dsl_parse(self) -> None:
         source_text = """
         surface math_lms.dashboard {
@@ -109,6 +138,7 @@ class DuiDslServiceTests(unittest.TestCase):
         )
         self.assertEqual(response.document.theme.profile, "minimal")
         self.assertEqual(response.document.theme.density, "compact")
+        self.assertEqual([operation.op for operation in response.operations], ["set_theme_profile", "set_density"])
         self.assertTrue(response.validation_result.valid)
         self.assertIsNotNone(response.preview_manifest)
 
@@ -154,6 +184,28 @@ class DuiDslServiceTests(unittest.TestCase):
                 turn_id="turn-commit-3",
             )
         self.assertEqual(error_ctx.exception.status_code, 409)
+
+    def test_build_commit_records_approved_by_in_manifest_and_dsl(self) -> None:
+        intent_response = build_intent(
+            user_prompt="Сделай стиль minimal",
+            current_manifest_id=None,
+            mode="extended",
+            surface_id=DEFAULT_SURFACE_ID,
+            session_id="test-session",
+            turn_id="turn-commit-approved-1",
+        )
+
+        response = build_commit(
+            patch_plan_id=intent_response.patch_plan.patch_plan_id,
+            surface_id=DEFAULT_SURFACE_ID,
+            session_id="test-session",
+            approved_by="reviewer-1",
+            turn_id="turn-commit-approved-2",
+        )
+
+        self.assertEqual(response.manifest.metadata["approved_by"], "reviewer-1")
+        current_document = STORE.get_current_dsl_document(DEFAULT_SURFACE_ID)
+        self.assertEqual(current_document.meta.created_by, "reviewer-1")
 
     def test_build_intent_tracks_base_revision(self) -> None:
         intent_response = build_intent(
@@ -303,14 +355,12 @@ class DuiDslServiceTests(unittest.TestCase):
                 mode="extended",
             )
 
-        practice_queue = next(node for node in response.document.nodes if node.id == "practice_queue")
-        header_region = next(
-            node
-            for node in response.document.nodes
-            if node.type == "layout.region" and node.props.get("zone") == "header"
-        )
-        self.assertEqual(practice_queue.props.get("zone"), "header")
-        self.assertIn("practice_queue", header_region.children)
+        practice_queue = next(widget for widget in response.document.widgets if widget.id == "practice_queue")
+        header_group = next(group for group in response.document.groups if group.zone == "header")
+        self.assertTrue(any(operation.op == "move_widget" and operation.zone == "header" for operation in response.operations))
+        self.assertEqual(practice_queue.zone, "header")
+        self.assertEqual(practice_queue.group_id, header_group.id)
+        self.assertIn("practice_queue", header_group.widget_ids)
         self.assertTrue(response.validation_result.valid)
 
     def test_build_intent_fallback_supports_low_bandwidth_prompt(self) -> None:
@@ -339,8 +389,8 @@ class DuiDslServiceTests(unittest.TestCase):
                 mode="extended",
             )
 
-        practice_queue = next(node for node in response.document.nodes if node.id == "practice_queue")
-        self.assertEqual(practice_queue.props.get("zone"), "content")
+        practice_queue = next(widget for widget in response.document.widgets if widget.id == "practice_queue")
+        self.assertEqual(practice_queue.zone, "content")
         self.assertEqual(response.document.layout_constraints.get("sidebar_width"), "narrow")
         self.assertTrue(response.validation_result.valid)
 
@@ -352,10 +402,10 @@ class DuiDslServiceTests(unittest.TestCase):
                 mode="extended",
             )
 
-        practice_section = next(node for node in response.document.nodes if node.id == "practice_focus")
-        self.assertEqual(practice_section.type, "layout.section")
-        self.assertIn("practice_queue", practice_section.children)
-        self.assertIn("mastery_trend", practice_section.children)
+        practice_section = next(group for group in response.document.groups if group.id == "practice_focus")
+        self.assertEqual(practice_section.zone, "content")
+        self.assertIn("practice_queue", practice_section.widget_ids)
+        self.assertIn("mastery_trend", practice_section.widget_ids)
         self.assertTrue(response.validation_result.valid)
 
     def test_build_dui_intent_fallback_supports_mentor_review_prompt(self) -> None:
@@ -366,10 +416,10 @@ class DuiDslServiceTests(unittest.TestCase):
                 mode="extended",
             )
 
-        review_section = next(node for node in response.document.nodes if node.id == "mentor_review")
-        self.assertEqual(review_section.type, "layout.section")
-        self.assertIn("learning_path", review_section.children)
-        self.assertIn("practice_queue", review_section.children)
+        review_section = next(group for group in response.document.groups if group.id == "mentor_review")
+        self.assertEqual(review_section.zone, "content")
+        self.assertIn("learning_path", review_section.widget_ids)
+        self.assertIn("practice_queue", review_section.widget_ids)
         self.assertTrue(response.validation_result.valid)
 
 

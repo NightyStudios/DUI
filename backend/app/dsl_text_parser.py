@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
+from .dsl_legacy_adapter import canonicalize_document
 from .dsl_models import (
     DuiDslAction,
     DuiDslBinding,
@@ -463,6 +465,12 @@ class Parser:
             previous.document_id = str(payload["document_id"])
         if "revision" in payload:
             previous.revision = int(payload["revision"])
+        if "created_at" in payload and isinstance(payload["created_at"], str):
+            normalized = payload["created_at"].replace("Z", "+00:00")
+            try:
+                previous.created_at = datetime.fromisoformat(normalized)
+            except ValueError:
+                pass
         if "created_by" in payload:
             previous.created_by = str(payload["created_by"])
         return previous
@@ -533,7 +541,7 @@ class Parser:
         self.expect("RBRACE")
         self.expect("EOF")
 
-        return DuiDslDocument(
+        document = DuiDslDocument(
             surface=surface,
             meta=meta,
             theme=theme,
@@ -546,6 +554,7 @@ class Parser:
             actions=actions,
             layout_constraints=layout_constraints,
         )
+        return canonicalize_document(document)
 
 
 def parse_dui_lang(source: str) -> DuiDslDocument:

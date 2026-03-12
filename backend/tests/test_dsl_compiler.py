@@ -3,7 +3,6 @@ from __future__ import annotations
 import unittest
 
 from backend.app.dsl_compiler import compile_dsl_document_to_manifest
-from backend.app.dsl_models import DuiDslAction
 from backend.app.dsl_seed import LESSON_SURFACE_ID, build_seed_document_for_surface
 from backend.app.dsl_text_parser import parse_dui_lang
 from backend.app.models import DEFAULT_SURFACE_ID
@@ -30,18 +29,9 @@ class DuiDslCompilerTests(unittest.TestCase):
 
     def test_compile_derives_sidebar_collapse_hints_from_dsl(self) -> None:
         document = build_seed_document_for_surface(DEFAULT_SURFACE_ID)
-        sidebar_region = next(
-            node for node in document.nodes if node.type == "layout.region" and node.props.get("zone") == "sidebar"
-        )
-        sidebar_region.visible_when = {"eq": ["state.sidebarCollapsed", False]}
-        document.state.locals["sidebarCollapsed"] = True
-        document.actions.append(
-            DuiDslAction(
-                id="toggle_sidebar",
-                type="state.toggle",
-                params={"key": "sidebarCollapsed"},
-            )
-        )
+        sidebar_group = next(group for group in document.groups if group.zone == "sidebar")
+        sidebar_group.behavior["collapsible"] = True
+        sidebar_group.behavior["collapsed"] = True
 
         manifest = compile_dsl_document_to_manifest(document, manifest_revision=3)
         self.assertEqual(manifest.layout_constraints.get("sidebar_collapsible"), True)
@@ -49,10 +39,9 @@ class DuiDslCompilerTests(unittest.TestCase):
 
     def test_compile_keeps_explicit_sidebar_collapse_override(self) -> None:
         document = build_seed_document_for_surface(DEFAULT_SURFACE_ID)
-        sidebar_region = next(
-            node for node in document.nodes if node.type == "layout.region" and node.props.get("zone") == "sidebar"
-        )
-        sidebar_region.visible_when = {"eq": ["state.sidebarCollapsed", False]}
+        sidebar_group = next(group for group in document.groups if group.zone == "sidebar")
+        sidebar_group.behavior["collapsible"] = True
+        sidebar_group.behavior["collapsed"] = True
         document.layout_constraints["sidebar_collapsible"] = False
 
         manifest = compile_dsl_document_to_manifest(document, manifest_revision=4)
@@ -60,11 +49,11 @@ class DuiDslCompilerTests(unittest.TestCase):
 
     def test_compile_preserves_widget_and_section_style_layout(self) -> None:
         document = build_seed_document_for_surface(DEFAULT_SURFACE_ID)
-        learning_overview = next(node for node in document.nodes if node.id == "learning_overview")
+        learning_overview = next(group for group in document.groups if group.id == "learning_overview")
         learning_overview.layout = {"columns": 3, "gap": "20px"}
         learning_overview.style = {"padding": "24px", "background": "#111111"}
 
-        learning_path = next(node for node in document.nodes if node.id == "learning_path")
+        learning_path = next(widget for widget in document.widgets if widget.id == "learning_path")
         learning_path.layout = {"col_span": 2, "min_height": "260px"}
         learning_path.style = {"borderRadius": "20px", "opacity": 0.9}
 
@@ -94,7 +83,6 @@ class DuiDslCompilerTests(unittest.TestCase):
         }
         """
         document = parse_dui_lang(source_text)
-        document.nodes = []
         manifest = compile_dsl_document_to_manifest(document, manifest_revision=7)
 
         self.assertEqual(manifest.revision, 7)

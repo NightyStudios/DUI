@@ -4,10 +4,10 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .dsl_catalog import DSL_VERSION
-from .models import Density, ThemeProfile, UiManifest, Zone
+from .models import Density, PatchOperation, ThemeProfile, UiManifest, Zone
 
 
 DuiIssueSeverity = Literal["error", "warning"]
@@ -114,6 +114,8 @@ class DuiDslPage(BaseModel):
 
 
 class DuiDslDocument(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     dsl_version: str = DSL_VERSION
     surface: DuiDslSurface
     meta: DuiDslMeta = Field(default_factory=DuiDslMeta)
@@ -122,7 +124,7 @@ class DuiDslDocument(BaseModel):
     pages: list[DuiDslPage] = Field(default_factory=list)
     groups: list[DuiDslWidgetGroup] = Field(default_factory=list)
     widgets: list[DuiDslWidget] = Field(default_factory=list)
-    nodes: list[DuiDslNode] = Field(default_factory=list)
+    legacy_nodes: list[DuiDslNode] = Field(default_factory=list, validation_alias="nodes", exclude=True)
     bindings: list[DuiDslBinding] = Field(default_factory=list)
     actions: list[DuiDslAction] = Field(default_factory=list)
     layout_constraints: dict[str, Any] = Field(default_factory=dict)
@@ -188,4 +190,23 @@ class DuiDslIntentResponse(BaseModel):
     document: DuiDslDocument
     validation_result: DuiDslValidationResult
     preview_manifest: UiManifest | None = None
+    operations: list[PatchOperation] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class DuiDslTransformRequest(BaseModel):
+    source_text: str = Field(min_length=1, max_length=100_000)
+    user_prompt: str = Field(min_length=1, max_length=2000)
+    surface_id: str | None = None
+    scope: str | None = None
+    session_id: str | None = None
+    turn_id: str | None = None
+
+
+class DuiDslTransformResponse(BaseModel):
+    source_text: str
+    document: DuiDslDocument
+    validation_result: DuiDslValidationResult
+    preview_manifest: UiManifest | None = None
+    operations: list[PatchOperation] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

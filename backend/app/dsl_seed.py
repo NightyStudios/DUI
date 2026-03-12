@@ -3,7 +3,6 @@ from __future__ import annotations
 from .dsl_models import (
     DuiDslDocument,
     DuiDslMeta,
-    DuiDslNode,
     DuiDslPage,
     DuiDslSurface,
     DuiDslTheme,
@@ -118,49 +117,6 @@ def _dashboard_seed_document(surface_id: str) -> DuiDslDocument:
                 props={"title": "Practice Queue", "zone": "sidebar", "capability_id": "math.practice_queue"},
             ),
         ],
-        nodes=[
-            DuiDslNode(id="root", type="layout.page", children=["main_header", "main_content", "main_sidebar"]),
-            DuiDslNode(id="main_header", type="layout.region", props={"zone": "header"}, children=["course_progress"]),
-            DuiDslNode(
-                id="main_content",
-                type="layout.region",
-                props={"zone": "content"},
-                children=["learning_overview", "learning_path", "mastery_trend"],
-            ),
-            DuiDslNode(id="main_sidebar", type="layout.region", props={"zone": "sidebar"}, children=["practice_queue"]),
-            DuiDslNode(
-                id="course_progress",
-                type="data.kpi_card",
-                props={
-                    "title": "Course Progress",
-                    "zone": "header",
-                    "capability_id": "math.progress_overview",
-                    "protected": True,
-                },
-            ),
-            DuiDslNode(
-                id="learning_path",
-                type="data.data_table",
-                props={"title": "Learning Path", "zone": "content", "capability_id": "math.learning_path"},
-            ),
-            DuiDslNode(
-                id="mastery_trend",
-                type="chart.line",
-                props={"title": "Mastery Trend", "zone": "content", "capability_id": "math.mastery_trend"},
-            ),
-            DuiDslNode(
-                id="practice_queue",
-                type="data.activity_feed",
-                props={"title": "Practice Queue", "zone": "sidebar", "capability_id": "math.practice_queue"},
-            ),
-            DuiDslNode(
-                id="learning_overview",
-                type="layout.section",
-                props={"title": "Learning Overview", "zone": "content"},
-                layout={"columns": 2},
-                children=["learning_path", "mastery_trend"],
-            ),
-        ],
     )
 
 
@@ -258,49 +214,6 @@ def _lesson_seed_document() -> DuiDslDocument:
                 capability_id="math.lesson_exercises",
                 visible=True,
                 props={"title": "Exercises", "zone": "sidebar", "capability_id": "math.lesson_exercises"},
-            ),
-        ],
-        nodes=[
-            DuiDslNode(id="root", type="layout.page", children=["lesson_header", "lesson_content", "lesson_sidebar"]),
-            DuiDslNode(id="lesson_header", type="layout.region", props={"zone": "header"}, children=["lesson_progress"]),
-            DuiDslNode(
-                id="lesson_content",
-                type="layout.region",
-                props={"zone": "content"},
-                children=["lesson_section", "lesson_objectives", "lesson_theory"],
-            ),
-            DuiDslNode(id="lesson_sidebar", type="layout.region", props={"zone": "sidebar"}, children=["lesson_exercises"]),
-            DuiDslNode(
-                id="lesson_progress",
-                type="data.kpi_card",
-                props={
-                    "title": "Lesson Progress",
-                    "zone": "header",
-                    "capability_id": "math.lesson_progress",
-                    "protected": True,
-                },
-            ),
-            DuiDslNode(
-                id="lesson_objectives",
-                type="lms.lesson_objectives",
-                props={"title": "Objectives", "zone": "content", "capability_id": "math.lesson_objectives"},
-            ),
-            DuiDslNode(
-                id="lesson_theory",
-                type="lms.theory_points",
-                props={"title": "Theory Points", "zone": "content", "capability_id": "math.lesson_theory"},
-            ),
-            DuiDslNode(
-                id="lesson_exercises",
-                type="lms.exercise_list",
-                props={"title": "Exercises", "zone": "sidebar", "capability_id": "math.lesson_exercises"},
-            ),
-            DuiDslNode(
-                id="lesson_section",
-                type="layout.section",
-                props={"title": "Lesson Content", "zone": "content"},
-                layout={"columns": 1},
-                children=["lesson_objectives", "lesson_theory"],
             ),
         ],
     )

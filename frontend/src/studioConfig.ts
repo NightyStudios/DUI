@@ -88,7 +88,7 @@ export const FALLBACK_DASHBOARD: LmsDashboardData = {
     { id: 'start_practice', label: 'Начать практику' },
     { id: 'review_mistakes', label: 'Разобрать ошибки' },
   ],
-  formulas: ['a^2 - b^2 = (a-b)(a+b)', 'sin^2(x) + cos^2(x) = 1', '(a+b)^2 = a^2 + 2ab + b^2'],
+  formulas: ['a^2 - b^2 = (a-b)(a+b)', '\\sin^2(x) + \\cos^2(x) = 1', 'x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}'],
   next_lesson_id: 'lesson-quadratic-intro',
   assignments: [
     { title: 'Набор B: линейные уравнения', due_date: '2026-02-11' },

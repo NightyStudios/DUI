@@ -76,6 +76,7 @@ class UiService:
         patch_plan_id: str,
         surface_id: str,
         session_id: str,
+        approved_by: str | None = None,
         turn_id: str | None = None,
         expected_base_revision: int | None = None,
     ) -> CommitResponse:
@@ -124,6 +125,8 @@ class UiService:
             next_manifest.metadata["surface_id"] = surface_id
             next_manifest.metadata["write_source"] = "patch_plan"
             next_manifest.metadata["patch_plan_id"] = patch_plan.patch_plan_id
+            actor_id = approved_by or session_id or DEFAULT_SESSION_ID
+            next_manifest.metadata["approved_by"] = actor_id
 
             consistency_errors = enforce_cross_surface_theme_consistency(
                 self.store,
@@ -139,7 +142,7 @@ class UiService:
             next_document = build_dsl_document_from_manifest(
                 next_manifest,
                 current_document=current_document,
-                created_by=session_id or DEFAULT_SESSION_ID,
+                created_by=actor_id,
             )
 
             ok, current_manifest_revision, current_dsl_revision = self.store.append_manifest_and_dsl_revision(
@@ -160,7 +163,7 @@ class UiService:
                 )
 
             patch_plan.surface_id = surface_id
-            patch_plan.session_id = session_id or DEFAULT_SESSION_ID
+            patch_plan.session_id = actor_id
             patch_plan.turn_id = turn_id or patch_plan.turn_id
             patch_plan.status = "committed"
             self.store.update_patch_plan(patch_plan, surface_id=surface_id)

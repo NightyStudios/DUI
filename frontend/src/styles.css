@@ -625,6 +625,34 @@ select {
   gap: 8px;
 }
 
+.math-formula-list-root {
+  display: grid;
+  gap: 8px;
+}
+
+.math-formula-list li {
+  min-height: 1.7rem;
+}
+
+.math-formula-plain {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--dui-surface) 76%, transparent 24%);
+  color: inherit;
+}
+
+.math-formula-status {
+  margin: 0;
+  font-size: 0.84rem;
+  color: var(--dui-muted);
+}
+
+.math-formula-list .mjx-container {
+  margin: 0;
+  font-size: 1.04rem;
+}
+
 .chip {
   display: inline-flex;
   align-items: center;

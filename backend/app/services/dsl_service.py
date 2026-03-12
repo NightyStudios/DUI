@@ -6,17 +6,22 @@ from fastapi import HTTPException
 
 from ..consistency import enforce_cross_surface_theme_consistency
 from ..dsl_compiler import compile_dsl_document_to_manifest
-from ..dsl_intent_engine import DuiDslIntentEngine
+from ..dsl_legacy_adapter import canonicalize_document
 from ..dsl_models import (
     DuiDslCommitResponse,
     DuiDslDocument,
     DuiDslIntentResponse,
     DuiDslParseResponse,
+    DuiDslTransformResponse,
     DuiDslValidateResponse,
 )
+from ..dsl_patch_service import apply_patch_operations_to_document
 from ..dsl_text_parser import DuiLangParseError, parse_dui_lang
+from ..dsl_text_serializer import serialize_dui_lang
 from ..dsl_validator import DuiDslValidator
+from ..intent_engine import IntentEngine
 from ..models import DEFAULT_SURFACE_ID, DuiMode
+from ..policy import PolicyEngine
 from ..storage import ManifestStore
 from ..telemetry import TELEMETRY
 
@@ -27,7 +32,7 @@ class DslService:
 
     def build_validate(self, *, document: DuiDslDocument, surface_id: str) -> DuiDslValidateResponse:
         with TELEMETRY.track("dui.validate"):
-            normalized_document = document.model_copy(deep=True)
+            normalized_document = canonicalize_document(document)
             normalized_document.surface.id = surface_id
             validation_result = DuiDslValidator.validate(normalized_document)
             if not validation_result.valid:
@@ -58,6 +63,7 @@ class DslService:
                 resolved_surface_id = document.surface.id.strip() if document.surface.id.strip() else DEFAULT_SURFACE_ID
 
             document.surface.id = resolved_surface_id
+            document = canonicalize_document(document)
             validation_result = DuiDslValidator.validate(document)
             compiled_manifest = None
             if validation_result.valid:
@@ -73,6 +79,92 @@ class DslService:
                 compiled_manifest=compiled_manifest,
             )
 
+    def build_transform(
+        self,
+        *,
+        source_text: str,
+        user_prompt: str,
+        surface_id: str | None,
+        mode: DuiMode,
+    ) -> DuiDslTransformResponse:
+        with TELEMETRY.track("dui.transform"):
+            try:
+                current_document = parse_dui_lang(source_text)
+            except DuiLangParseError as error:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"message": str(error), "line": error.line, "column": error.column},
+                ) from error
+            except Exception as error:  # noqa: BLE001
+                raise HTTPException(status_code=400, detail=f"Failed to parse DUI source: {type(error).__name__}") from error
+
+            resolved_surface_id = (surface_id or "").strip()
+            if not resolved_surface_id:
+                resolved_surface_id = current_document.surface.id.strip() if current_document.surface.id.strip() else DEFAULT_SURFACE_ID
+
+            current_document = canonicalize_document(current_document)
+            current_document.surface.id = resolved_surface_id
+            current_manifest = compile_dsl_document_to_manifest(
+                current_document,
+                manifest_revision=max(current_document.meta.revision, 1),
+            )
+
+            patch_plan = IntentEngine.build_patch_plan(user_prompt, current_manifest, mode=mode)
+            patch_plan.surface_id = resolved_surface_id
+            policy_result = PolicyEngine.validate_operations(current_manifest, patch_plan.operations, mode=mode)
+            if policy_result.errors:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "message": "DUI transform rejected by operation policy",
+                        "errors": policy_result.errors,
+                        "warnings": [*patch_plan.warnings, *policy_result.warnings],
+                        "operations": [operation.model_dump(mode="json") for operation in patch_plan.operations],
+                    },
+                )
+
+            patch_plan.warnings.extend(policy_result.warnings)
+            next_document = apply_patch_operations_to_document(current_document, patch_plan.operations)
+            next_document.surface.id = resolved_surface_id
+
+            mode_errors = self._enforce_mode(current_document=current_document, next_document=next_document, mode=mode)
+            if mode_errors:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "message": "DUI transform rejected by mode policy",
+                        "errors": mode_errors,
+                        "warnings": patch_plan.warnings,
+                        "operations": [operation.model_dump(mode="json") for operation in patch_plan.operations],
+                    },
+                )
+
+            validation_result = DuiDslValidator.validate(next_document)
+            if not validation_result.valid:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "message": "DUI transform produced invalid document",
+                        "errors": [issue.model_dump(mode="json") for issue in validation_result.errors],
+                        "warnings": patch_plan.warnings,
+                        "operations": [operation.model_dump(mode="json") for operation in patch_plan.operations],
+                    },
+                )
+
+            preview_manifest = compile_dsl_document_to_manifest(
+                next_document,
+                manifest_revision=current_manifest.revision,
+                manifest_id=current_manifest.manifest_id,
+            )
+            return DuiDslTransformResponse(
+                source_text=serialize_dui_lang(next_document),
+                document=next_document,
+                validation_result=validation_result,
+                preview_manifest=preview_manifest,
+                operations=patch_plan.operations,
+                warnings=patch_plan.warnings,
+            )
+
     def build_intent(
         self,
         *,
@@ -81,19 +173,36 @@ class DslService:
         mode: DuiMode,
     ) -> DuiDslIntentResponse:
         with TELEMETRY.track("dui.intent"):
-            current_document = self.store.get_current_dsl_document(surface_id=surface_id)
-            next_document, intent_warnings = DuiDslIntentEngine.build_next_document(
-                user_prompt,
-                current_document,
-                mode=mode,
-            )
+            current_document = canonicalize_document(self.store.get_current_dsl_document(surface_id=surface_id))
+            current_manifest = self.store.get_current_manifest(surface_id=surface_id)
+            patch_plan = IntentEngine.build_patch_plan(user_prompt, current_manifest, mode=mode)
+            patch_plan.surface_id = surface_id
+            policy_result = PolicyEngine.validate_operations(current_manifest, patch_plan.operations, mode=mode)
+            if policy_result.errors:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "message": "DUI intent rejected by operation policy",
+                        "errors": policy_result.errors,
+                        "warnings": [*patch_plan.warnings, *policy_result.warnings],
+                        "operations": [operation.model_dump(mode="json") for operation in patch_plan.operations],
+                    },
+                )
+
+            patch_plan.warnings.extend(policy_result.warnings)
+            next_document = apply_patch_operations_to_document(current_document, patch_plan.operations)
             next_document.surface.id = surface_id
 
             mode_errors = self._enforce_mode(current_document=current_document, next_document=next_document, mode=mode)
             if mode_errors:
                 raise HTTPException(
                     status_code=400,
-                    detail={"message": "DUI intent rejected by mode policy", "errors": mode_errors},
+                    detail={
+                        "message": "DUI intent rejected by mode policy",
+                        "errors": mode_errors,
+                        "warnings": patch_plan.warnings,
+                        "operations": [operation.model_dump(mode="json") for operation in patch_plan.operations],
+                    },
                 )
 
             validation_result = DuiDslValidator.validate(next_document)
@@ -103,11 +212,11 @@ class DslService:
                     detail={
                         "message": "DUI intent produced invalid document",
                         "errors": [issue.model_dump(mode="json") for issue in validation_result.errors],
-                        "warnings": intent_warnings,
+                        "warnings": patch_plan.warnings,
+                        "operations": [operation.model_dump(mode="json") for operation in patch_plan.operations],
                     },
                 )
 
-            current_manifest = self.store.get_current_manifest(surface_id=surface_id)
             preview_manifest = compile_dsl_document_to_manifest(
                 next_document,
                 manifest_revision=current_manifest.revision,
@@ -117,7 +226,8 @@ class DslService:
                 document=next_document,
                 validation_result=validation_result,
                 preview_manifest=preview_manifest,
-                warnings=intent_warnings,
+                operations=patch_plan.operations,
+                warnings=patch_plan.warnings,
             )
 
     def build_commit(
@@ -130,7 +240,7 @@ class DslService:
         expected_dsl_revision: int | None = None,
     ) -> DuiDslCommitResponse:
         with TELEMETRY.track("dui.commit"):
-            normalized_document = document.model_copy(deep=True)
+            normalized_document = canonicalize_document(document)
             normalized_document.surface.id = surface_id
             validation_result = DuiDslValidator.validate(normalized_document)
             if not validation_result.valid:
@@ -143,7 +253,7 @@ class DslService:
                 )
 
             current_manifest = self.store.get_current_manifest(surface_id=surface_id)
-            current_document = self.store.get_current_dsl_document(surface_id=surface_id)
+            current_document = canonicalize_document(self.store.get_current_dsl_document(surface_id=surface_id))
             if expected_manifest_revision is not None and current_manifest.revision != expected_manifest_revision:
                 raise HTTPException(
                     status_code=409,
@@ -219,7 +329,6 @@ class DslService:
                 ("pages", current_document.pages, next_document.pages),
                 ("groups", current_document.groups, next_document.groups),
                 ("widgets", current_document.widgets, next_document.widgets),
-                ("nodes", current_document.nodes, next_document.nodes),
                 ("bindings", current_document.bindings, next_document.bindings),
                 ("actions", current_document.actions, next_document.actions),
                 ("layout_constraints", current_document.layout_constraints, next_document.layout_constraints),

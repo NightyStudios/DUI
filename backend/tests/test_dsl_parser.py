@@ -98,10 +98,14 @@ class DuiDslParserTests(unittest.TestCase):
         self.assertEqual(document.surface.id, "math_lms.dashboard")
         self.assertEqual(document.theme.profile, "minimal")
         self.assertEqual(document.theme.density, "compact")
-        self.assertEqual(len(document.nodes), 5)
+        self.assertEqual(len(document.pages), 1)
+        self.assertEqual(len(document.groups), 2)
+        self.assertEqual(len(document.widgets), 2)
         self.assertEqual(len(document.actions), 1)
         self.assertEqual(len(document.bindings), 1)
-        self.assertEqual(document.nodes[0].id, "root")
+        self.assertEqual(document.pages[0].id, "math_lms_dashboard_page")
+        self.assertEqual(document.widgets[0].id, "course_progress")
+        self.assertEqual(document.widgets[0].group_id, "legacy_header_group")
 
     def test_parse_invalid_dsl_text_raises(self) -> None:
         bad_text = "surface demo { node root: layout.page { children: [x] "

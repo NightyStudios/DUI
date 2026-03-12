@@ -44,6 +44,34 @@ export interface UiManifest {
   metadata: Record<string, string>;
 }
 
+export interface PatchOperation {
+  op:
+    | 'set_theme_profile'
+    | 'set_density'
+    | 'set_theme_tokens'
+    | 'set_layout_constraints'
+    | 'move_widget'
+    | 'remove_widget'
+    | 'add_widget'
+    | 'add_widget_from_template'
+    | 'compose_section';
+  profile?: ThemeProfile | null;
+  density?: Density | null;
+  tokens?: Record<string, string> | null;
+  layout_constraints?: Record<string, unknown> | null;
+  widget_id?: string | null;
+  zone?: Zone | null;
+  widget?: WidgetConfig | null;
+  template_id?: string | null;
+  title?: string | null;
+  capability_id?: string | null;
+  props?: Record<string, unknown> | null;
+  section_id?: string | null;
+  section_title?: string | null;
+  child_widget_ids?: string[] | null;
+  section_layout?: Record<string, unknown> | null;
+}
+
 export interface UiSurfaceSummary {
   surface_id: string;
   session_id: string;
@@ -73,20 +101,6 @@ export interface DuiDslTheme {
 
 export interface DuiDslState {
   locals: Record<string, unknown>;
-}
-
-export interface DuiDslNode {
-  id: string;
-  type: string;
-  props: Record<string, unknown>;
-  style: Record<string, unknown>;
-  layout: Record<string, unknown>;
-  a11y: Record<string, unknown>;
-  visible_when: Record<string, unknown> | null;
-  enabled_when: Record<string, unknown> | null;
-  children: string[];
-  slots: Record<string, string[]>;
-  on: Record<string, string>;
 }
 
 export interface DuiDslBinding {
@@ -161,7 +175,6 @@ export interface DuiDslDocument {
   pages: DuiDslPage[];
   groups: DuiDslWidgetGroup[];
   widgets: DuiDslWidget[];
-  nodes: DuiDslNode[];
   bindings: DuiDslBinding[];
   actions: DuiDslAction[];
   layout_constraints: Record<string, unknown>;
@@ -183,11 +196,6 @@ export interface DuiDslValidationResult {
   stats: Record<string, number>;
 }
 
-export interface DuiDslValidateResponse {
-  result: DuiDslValidationResult;
-  compiled_manifest: UiManifest | null;
-}
-
 export interface DuiDslParseResponse {
   document: DuiDslDocument;
   validation_result: DuiDslValidationResult;
@@ -198,6 +206,7 @@ export interface DuiDslIntentResponse {
   document: DuiDslDocument;
   validation_result: DuiDslValidationResult;
   preview_manifest: UiManifest | null;
+  operations: PatchOperation[];
   warnings: string[];
 }
 
@@ -246,10 +255,4 @@ export interface LmsLessonData {
   objectives: string[];
   theory_points: string[];
   exercises: Array<{ id: string; prompt: string; type: string }>;
-}
-
-export interface SurfaceContext {
-  surfaceId: string;
-  sessionId: string;
-  mode?: DuiMode;
 }
